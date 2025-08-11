@@ -1,0 +1,430 @@
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
+from sklearn.pipeline import Pipeline
+from sklearn.impute import SimpleImputer
+from sklearn.preprocessing import StandardScaler, RobustScaler
+from sklearn.decomposition import PCA
+from sklearn.cluster import KMeans, DBSCAN
+from sklearn.metrics import silhouette_score, calinski_harabasz_score
+from sklearn.feature_selection import VarianceThreshold
+import hdbscan
+from collections import Counter
+import warnings
+warnings.filterwarnings('ignore')
+
+# === Leitura do CSV ===
+df = pd.read_csv('INFO-Sumario_Taxa_Setor-2025-07-15.csv', encoding='ISO-8859-1', sep=';')
+
+# === Colunas de interesse ===
+indices_cols = [
+    'Indice_Taxa', 'Indice_Indisp', 'TX_Indice', 'Indice_TX_PktLoss',
+    'Indice_TX_Delay', 'PRB_Indice', 'UE_Indice', 'Indice_RRC',
+    'Indice_ERAB', 'Indice_CSFB', 'Indice_SIGS1', 'Indice_QUEDA.SESSAO',
+    'Indice_ERAB.QCI1', 'Indice_DROP.RATE.QCI1', 'Indice_INTERFERÊNCIA',
+    'Indice_HO.VOLTE', 'Indice_HANDOVER', 'Indice_CQI', 'Indice_PACKET.DELAY',
+    'Indice_UTIL.PDCCH', 'Indice_LATENCIA.BUFFER.DL',
+    'Indice_REASSEMBLY.FAIL.RATE', 'Indice_FRAGMENTACAO.TX',
+    'Indice_DESVIO.CLOCK'
+]
+
+# === Conversão dos dados ===
+for col in indices_cols:
+    df[col] = pd.to_numeric(df[col].astype(str).str.replace(',', '.').str.strip(), errors='coerce')
+
+print(f"=== DIAGNÓSTICO DOS DADOS ===")
+print(f"Shape original: {df.shape}")
+
+# === Análise de missings ===
+missing_analysis = df[indices_cols].isnull().sum()
+print(f"\nValores faltantes por coluna:")
+for col, missing in missing_analysis.items():
+    if missing > 0:
+        pct = missing / len(df) * 100
+        print(f"  {col}: {missing} ({pct:.1f}%)")
+
+# === Remover colunas com muitos missings ===
+cols_to_keep = []
+for col in indices_cols:
+    missing_pct = df[col].isnull().sum() / len(df)
+    if missing_pct < 0.5:  # Manter colunas com menos de 50% missing
+        cols_to_keep.append(col)
+    else:
+        print(f"Removendo {col} - muitos valores faltantes ({missing_pct*100:.1f}%)")
+
+indices_cols = cols_to_keep
+print(f"Colunas mantidas: {len(indices_cols)}")
+
+# === Análise de variância ===
+# Remover colunas com baixa variância (todos valores iguais ou quase)
+df_temp = df[indices_cols].fillna(df[indices_cols].median())
+variance_selector = VarianceThreshold(threshold=0.01)  # Variância mínima
+variance_selector.fit(df_temp)
+
+low_variance_cols = [col for i, col in enumerate(indices_cols) 
+                    if not variance_selector.get_support()[i]]
+if low_variance_cols:
+    print(f"Removendo colunas com baixa variância: {low_variance_cols}")
+    indices_cols = [col for col in indices_cols if col not in low_variance_cols]
+
+# === Remover outliers extremos ANTES do clustering ===
+print(f"\n=== TRATAMENTO DE OUTLIERS ===")
+df_clean = df.copy()
+
+# Para cada índice, remover valores impossíveis (fora de 0-10)
+for col in indices_cols:
+    before = len(df_clean)
+    df_clean = df_clean[(df_clean[col].isna()) | 
+                       ((df_clean[col] >= 0) & (df_clean[col] <= 10))]
+    after = len(df_clean)
+    if before != after:
+        print(f"{col}: removidos {before-after} valores fora do range 0-10")
+
+# Remover outliers usando IQR para cada coluna
+for col in indices_cols:
+    Q1 = df_clean[col].quantile(0.05)
+    Q3 = df_clean[col].quantile(0.95)
+    IQR = Q3 - Q1
+    lower_bound = Q1 - 1.5 * IQR
+    upper_bound = Q3 + 1.5 * IQR
+    
+    before = len(df_clean)
+    df_clean = df_clean[(df_clean[col].isna()) | 
+                       ((df_clean[col] >= lower_bound) & (df_clean[col] <= upper_bound))]
+    after = len(df_clean)
+    if before != after:
+        print(f"{col}: removidos {before-after} outliers extremos")
+
+print(f"Dados após limpeza: {len(df_clean)} linhas ({len(df_clean)/len(df)*100:.1f}% do original)")
+
+# === Remoção de correlação alta ===
+corr_matrix = df_clean[indices_cols].corr().abs()
+upper = corr_matrix.where(np.triu(np.ones(corr_matrix.shape), k=1).astype(bool))
+to_drop = [column for column in upper.columns if any(upper[column] > 0.8)]  # Menor threshold
+filtered_cols = [col for col in indices_cols if col not in to_drop]
+
+if to_drop:
+    print(f"\nColunas removidas por alta correlação (>0.8): {to_drop}")
+print(f"Colunas finais para clustering: {len(filtered_cols)}")
+
+# === Preparação final dos dados ===
+X_final = df_clean[filtered_cols].fillna(df_clean[filtered_cols].median())
+print(f"Dados finais para clustering: {X_final.shape}")
+
+# === Teste com múltiplos algoritmos ===
+print(f"\n=== TESTANDO DIFERENTES ALGORITMOS ===")
+
+# Preparar pipeline de pré-processamento
+preprocessor = Pipeline([
+    ("scaler", StandardScaler())
+])
+
+X_scaled = preprocessor.fit_transform(X_final)
+
+# 1. KMeans com diferentes números de clusters
+print("\n1. TESTANDO K-MEANS:")
+silhouette_scores = []
+k_range = range(3, 15)
+for k in k_range:
+    kmeans = KMeans(n_clusters=k, random_state=42, n_init=10)
+    labels = kmeans.fit_predict(X_scaled)
+    score = silhouette_score(X_scaled, labels)
+    ch_score = calinski_harabasz_score(X_scaled, labels)
+    silhouette_scores.append(score)
+    print(f"  K={k}: Silhouette={score:.3f}, CH_Score={ch_score:.1f}")
+
+# Melhor K para KMeans
+best_k = k_range[np.argmax(silhouette_scores)]
+print(f"  Melhor K para K-Means: {best_k} (Score: {max(silhouette_scores):.3f})")
+
+# 2. DBSCAN
+print("\n2. TESTANDO DBSCAN:")
+eps_values = [0.3, 0.5, 0.7, 1.0, 1.5]
+min_samples_values = [5, 10, 20]
+
+best_dbscan_score = -1
+best_dbscan_params = None
+
+for eps in eps_values:
+    for min_samples in min_samples_values:
+        dbscan = DBSCAN(eps=eps, min_samples=min_samples)
+        labels = dbscan.fit_predict(X_scaled)
+        
+        n_clusters = len(set(labels)) - (1 if -1 in labels else 0)
+        n_noise = list(labels).count(-1)
+        noise_pct = n_noise / len(labels) * 100
+        
+        if n_clusters > 1 and noise_pct < 30:  # Menos de 30% ruído
+            try:
+                if -1 in labels:
+                    mask = labels != -1
+                    if np.sum(mask) > 1 and len(set(labels[mask])) > 1:
+                        score = silhouette_score(X_scaled[mask], labels[mask])
+                    else:
+                        score = -1
+                else:
+                    score = silhouette_score(X_scaled, labels)
+                
+                print(f"  eps={eps}, min_samples={min_samples}: Score={score:.3f}, "
+                      f"Clusters={n_clusters}, Ruído={noise_pct:.1f}%")
+                
+                if score > best_dbscan_score:
+                    best_dbscan_score = score
+                    best_dbscan_params = (eps, min_samples)
+            except:
+                continue
+
+# 3. HDBSCAN mais conservador
+print("\n3. TESTANDO HDBSCAN (CONSERVADOR):")
+min_cluster_sizes = [50, 100, 200]  # Clusters maiores
+min_samples_values = [5, 10, 20]
+
+best_hdbscan_score = -1
+best_hdbscan_params = None
+
+for min_size in min_cluster_sizes:
+    for min_samples in min_samples_values:
+        try:
+            clusterer = hdbscan.HDBSCAN(
+                min_cluster_size=min_size,
+                min_samples=min_samples,
+                cluster_selection_epsilon=0.0
+            )
+            labels = clusterer.fit_predict(X_scaled)
+            
+            n_clusters = len(set(labels)) - (1 if -1 in labels else 0)
+            n_noise = list(labels).count(-1)
+            noise_pct = n_noise / len(labels) * 100
+            
+            if n_clusters > 1 and noise_pct < 30:
+                if -1 in labels:
+                    mask = labels != -1
+                    if np.sum(mask) > 1 and len(set(labels[mask])) > 1:
+                        score = silhouette_score(X_scaled[mask], labels[mask])
+                    else:
+                        score = -1
+                else:
+                    score = silhouette_score(X_scaled, labels)
+                
+                print(f"  min_size={min_size}, min_samples={min_samples}: Score={score:.3f}, "
+                      f"Clusters={n_clusters}, Ruído={noise_pct:.1f}%")
+                
+                if score > best_hdbscan_score:
+                    best_hdbscan_score = score
+                    best_hdbscan_params = (min_size, min_samples)
+        except:
+            continue
+
+# === Escolher melhor algoritmo ===
+algorithms_scores = {
+    'KMeans': max(silhouette_scores),
+    'DBSCAN': best_dbscan_score if best_dbscan_params else -1,
+    'HDBSCAN': best_hdbscan_score if best_hdbscan_params else -1
+}
+
+print(f"\n=== COMPARAÇÃO FINAL ===")
+for algo, score in algorithms_scores.items():
+    print(f"{algo}: {score:.3f}")
+
+best_algorithm = max(algorithms_scores, key=algorithms_scores.get)
+print(f"Melhor algoritmo: {best_algorithm}")
+
+# === Aplicar melhor algoritmo ===
+if best_algorithm == 'KMeans':
+    final_clusterer = KMeans(n_clusters=best_k, random_state=42, n_init=10)
+    final_labels = final_clusterer.fit_predict(X_scaled)
+    print(f"Usando K-Means com K={best_k}")
+
+elif best_algorithm == 'DBSCAN':
+    eps, min_samples = best_dbscan_params
+    final_clusterer = DBSCAN(eps=eps, min_samples=min_samples)
+    final_labels = final_clusterer.fit_predict(X_scaled)
+    print(f"Usando DBSCAN com eps={eps}, min_samples={min_samples}")
+
+else:  # HDBSCAN
+    min_size, min_samples = best_hdbscan_params
+    final_clusterer = hdbscan.HDBSCAN(
+        min_cluster_size=min_size,
+        min_samples=min_samples,
+        cluster_selection_epsilon=0.0
+    )
+    final_labels = final_clusterer.fit_predict(X_scaled)
+    print(f"Usando HDBSCAN com min_size={min_size}, min_samples={min_samples}")
+
+# === Adicionar resultados ao DataFrame ===
+df_result = df_clean.copy()
+df_result['cluster'] = final_labels
+
+# === PCA para visualização ===
+pca_viz = PCA(n_components=2)
+X_pca_viz = pca_viz.fit_transform(X_scaled)
+df_result['pca_1'] = X_pca_viz[:, 0]
+df_result['pca_2'] = X_pca_viz[:, 1]
+
+# === Análise final ===
+print(f"\n=== RESULTADO FINAL ===")
+n_clusters = len(set(final_labels)) - (1 if -1 in final_labels else 0)
+n_noise = list(final_labels).count(-1) if -1 in final_labels else 0
+noise_pct = n_noise / len(final_labels) * 100
+
+print(f"Algoritmo usado: {best_algorithm}")
+print(f"Número de clusters: {n_clusters}")
+print(f"Pontos de ruído: {n_noise} ({noise_pct:.1f}%)")
+print(f"Silhouette Score: {algorithms_scores[best_algorithm]:.3f}")
+
+# Distribuição dos clusters
+cluster_counts = Counter(final_labels)
+print(f"\nDistribuição dos clusters:")
+for cluster in sorted(cluster_counts.keys()):
+    count = cluster_counts[cluster]
+    pct = count / len(final_labels) * 100
+    if cluster == -1:
+        print(f"  Ruído: {count} setores ({pct:.1f}%)")
+    else:
+        print(f"  Cluster {cluster}: {count} setores ({pct:.1f}%)")
+
+# === Análise dos clusters ===
+if n_clusters > 0 and n_clusters < 20:  # Só analizar se temos um número razoável de clusters
+    print(f"\n=== ANÁLISE DOS CLUSTERS ===")
+    
+    for cluster_id in sorted(set(final_labels)):
+        if cluster_id == -1:
+            continue
+            
+        cluster_data = df_result[df_result['cluster'] == cluster_id]
+        print(f"\n--- CLUSTER {cluster_id} ({len(cluster_data)} setores) ---")
+        
+        # Médias dos índices
+        medias = cluster_data[filtered_cols].mean()
+        piores = medias.nlargest(3)
+        melhores = medias.nsmallest(3)
+        
+        print("Índices mais problemáticos:")
+        for idx, valor in piores.items():
+            print(f"  {idx}: {valor:.2f}")
+        
+        print("Índices com melhor performance:")
+        for idx, valor in melhores.items():
+            print(f"  {idx}: {valor:.2f}")
+
+# === Visualização ===
+plt.figure(figsize=(12, 8))
+
+if n_clusters <= 20:  # Só plotar se não temos muitos clusters
+    unique_clusters = sorted(set(final_labels))
+    colors = plt.cm.tab20(np.linspace(0, 1, len(unique_clusters)))
+    
+    for i, cluster_id in enumerate(unique_clusters):
+        cluster_data = df_result[df_result['cluster'] == cluster_id]
+        if cluster_id == -1:
+            plt.scatter(cluster_data['pca_1'], cluster_data['pca_2'], 
+                       c='red', marker='x', s=30, alpha=0.6, label=f'Ruído ({len(cluster_data)})')
+        else:
+            plt.scatter(cluster_data['pca_1'], cluster_data['pca_2'],
+                       c=[colors[i]], s=50, alpha=0.7, 
+                       label=f'Cluster {cluster_id} ({len(cluster_data)})')
+    
+    plt.xlabel('PCA 1')
+    plt.ylabel('PCA 2')
+    plt.title(f'Clustering Final - {best_algorithm}')
+    plt.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
+    plt.grid(True, alpha=0.3)
+else:
+    # Se muitos clusters, fazer visualização simplificada
+    plt.scatter(df_result['pca_1'], df_result['pca_2'], 
+               c=final_labels, cmap='tab20', s=50, alpha=0.7)
+    plt.xlabel('PCA 1')
+    plt.ylabel('PCA 2')
+    plt.title(f'Clustering Final - {best_algorithm} ({n_clusters} clusters)')
+    plt.colorbar()
+    plt.grid(True, alpha=0.3)
+
+plt.tight_layout()
+plt.show()
+
+# === Salvar resultados COMPLETOS ===
+# Primeiro, vamos mapear os clusters de volta para o DataFrame original
+print(f"\n=== PREPARANDO RESULTADO FINAL COMPLETO ===")
+
+# Identificar coluna de setor
+if 'SETOR' in df.columns:
+    setor_col = 'SETOR'
+elif 'Setor' in df.columns:
+    setor_col = 'Setor'
+else:
+    setor_cols = [col for col in df.columns if 'setor' in col.lower()]
+    if setor_cols:
+        setor_col = setor_cols[0]
+        print(f"Usando coluna de setor: {setor_col}")
+    else:
+        # Se não encontrar coluna de setor, usar índice original
+        df['SETOR_ID'] = df.index
+        setor_col = 'SETOR_ID'
+        print("Criando coluna SETOR_ID baseada no índice")
+
+# Criar DataFrame de mapeamento cluster
+cluster_mapping = df_result[[setor_col, 'cluster']].copy()
+
+# Fazer merge com DataFrame original para manter TODAS as colunas
+df_original_completo = df.copy()
+
+# Merge para adicionar informações de cluster ao DataFrame original
+resultado_completo = df_original_completo.merge(
+    cluster_mapping, 
+    on=setor_col, 
+    how='left'  # Left join para manter todos os setores originais
+)
+
+# Preencher NaN nos clusters (setores que foram removidos durante limpeza)
+resultado_completo['cluster'] = resultado_completo['cluster'].fillna(-999)  # -999 = removido durante limpeza
+
+# Reorganizar colunas: setor, cluster, depois todas as outras
+colunas_ordenadas = [setor_col, 'cluster'] + [col for col in resultado_completo.columns 
+                                              if col not in [setor_col, 'cluster']]
+
+resultado_final_completo = resultado_completo[colunas_ordenadas].copy()
+
+# Adicionar metadados do cluster
+cluster_info = {
+    0: "CRÍTICO - Prioridade ALTA",
+    1: "MODERADO - Prioridade MÉDIA", 
+    2: "UE/DELAY - Prioridade MÉDIA",
+    3: "BOM - Prioridade BAIXA",
+    -999: "REMOVIDO_LIMPEZA - Outlier extremo"
+}
+
+resultado_final_completo['cluster_nome'] = resultado_final_completo['cluster'].map(cluster_info)
+resultado_final_completo['cluster_nome'] = resultado_final_completo['cluster_nome'].fillna('DESCONHECIDO')
+
+# Salvar resultado completo
+resultado_final_completo.to_csv('clustering_resultado_completo.csv', index=False, sep=';', encoding='utf-8')
+
+print(f"✅ Arquivo completo salvo: 'clustering_resultado_completo.csv'")
+print(f"📊 Colunas no arquivo: {len(resultado_final_completo.columns)}")
+print(f"📋 Linhas no arquivo: {len(resultado_final_completo)}")
+print(f"🏗️ Estrutura: [{setor_col}] + [cluster] + [cluster_nome] + [todas as {len(df.columns)} colunas originais]")
+
+# Estatísticas do resultado final
+print(f"\n=== ESTATÍSTICAS DO RESULTADO COMPLETO ===")
+cluster_stats = resultado_final_completo['cluster'].value_counts().sort_index()
+for cluster_id, count in cluster_stats.items():
+    pct = count / len(resultado_final_completo) * 100
+    nome = cluster_info.get(cluster_id, 'DESCONHECIDO')
+    print(f"Cluster {cluster_id}: {count:,} setores ({pct:.1f}%) - {nome}")
+
+# Mostrar primeiras colunas como exemplo
+print(f"\n=== PREVIEW DAS PRIMEIRAS COLUNAS ===")
+preview_cols = resultado_final_completo.columns[:10].tolist()
+if len(resultado_final_completo.columns) > 10:
+    preview_cols.append(f"... e mais {len(resultado_final_completo.columns) - 10} colunas")
+print(f"Colunas: {preview_cols}")
+
+print(f"\nArquivos salvos:")
+print(f"📄 'clustering_resultado_completo.csv' - TODAS as colunas originais + cluster")
+print(f"📊 Algoritmo: {best_algorithm}")
+print(f"🎯 Score: {algorithms_scores[best_algorithm]:.3f}")
+print(f"🔢 Clusters: {n_clusters}")
+print(f"🚫 Ruído: {noise_pct:.1f}%")
+print(f"📋 Total de setores: {len(resultado_final_completo):,}")
+print(f"📊 Total de colunas: {len(resultado_final_completo.columns)}")
