@@ -1,0 +1,150 @@
+import os
+import pysftp
+import zipfile
+import shutil
+from datetime import datetime
+import glob
+
+# Configurações SFTP
+sftp_config = {
+    'host': '10.8.182.4',
+    'username': 'sftp.vivo',
+    'password': '----',
+}
+
+remote_dir = 'Netchart/raw'
+local_base_dir = r'C:\Users\40417524\Telefonica\Engenharia de RF LESTE (RJ ES BA SE) - Iniciativa Automação\NetChart - teste'
+
+# Prefixos a buscar
+prefixos = [
+    '2G_RAW_HUAWEI',
+    '3G_RAW_HUAWEI',
+    '4G_RAW_HUAWEI',
+    '5G_RAW_HUAWEI',
+    '4G_RAW_ERICSSON',
+    '5G_RAW_ERICSSON',
+]
+
+def limpar_pasta(caminho_pasta):
+    """Remove todos os arquivos de uma pasta mantendo a estrutura de diretórios"""
+    if os.path.exists(caminho_pasta):
+        for arquivo in glob.glob(os.path.join(caminho_pasta, "*")):
+            try:
+                if os.path.isfile(arquivo):
+                    os.remove(arquivo)
+                    print(f"Arquivo removido: {arquivo}")
+                elif os.path.isdir(arquivo):
+                    shutil.rmtree(arquivo)
+                    print(f"Diretório removido: {arquivo}")
+            except Exception as e:
+                print(f"Erro ao remover {arquivo}: {e}")
+
+def descompactar_arquivo(arquivo_zip, pasta_destino):
+    """Descompacta um arquivo ZIP na pasta de destino"""
+    try:
+        with zipfile.ZipFile(arquivo_zip, 'r') as zip_ref:
+            zip_ref.extractall(pasta_destino)
+            print(f"Arquivo {arquivo_zip} descompactado em {pasta_destino}")
+            
+            # Lista os arquivos extraídos
+            arquivos_extraidos = zip_ref.namelist()
+            print(f"Arquivos extraídos: {len(arquivos_extraidos)} arquivo(s)")
+            
+        # Remove o arquivo ZIP após descompactar
+        os.remove(arquivo_zip)
+        print(f"Arquivo ZIP {arquivo_zip} removido após descompactação")
+        
+        return True
+    except zipfile.BadZipFile:
+        print(f"Erro: {arquivo_zip} não é um arquivo ZIP válido")
+        return False
+    except Exception as e:
+        print(f"Erro ao descompactar {arquivo_zip}: {e}")
+        return False
+
+def extrair_data_hora(nome):
+    """Extrai data e hora do nome do arquivo para ordenação"""
+    try:
+        partes = nome.split('_')
+        for parte in partes:
+            if parte.isdigit() and len(parte) >= 14:
+                return datetime.strptime(parte[:14], '%Y%m%d%H%M%S')
+    except:
+        pass
+    return datetime.min
+
+# Criar pastas se não existirem e limpar conteúdo existente
+for prefix in prefixos:
+    tecnologia = prefix.split('_')[0]  # 2G, 3G, etc
+    pasta_tecnologia = os.path.join(local_base_dir, tecnologia)
+    os.makedirs(pasta_tecnologia, exist_ok=True)
+    
+    # Limpar pasta antes de baixar novos arquivos
+    print(f"Limpando pasta {tecnologia}...")
+    limpar_pasta(pasta_tecnologia)
+
+# Configurar pysftp para ignorar verificação de host
+cnopts = pysftp.CnOpts()
+cnopts.hostkeys = None
+
+# Conectar ao SFTP
+try:
+    with pysftp.Connection(**sftp_config, cnopts=cnopts) as sftp:
+        print("Conectado ao servidor SFTP.")
+        sftp.cwd(remote_dir)
+        arquivos_remotos = sftp.listdir()
+        print(f"Encontrados {len(arquivos_remotos)} arquivos no servidor")
+
+        for prefixo in prefixos:
+            print(f"\nProcessando prefixo: {prefixo}")
+            arquivos_filtrados = [arq for arq in arquivos_remotos if arq.startswith(prefixo)]
+            
+            if not arquivos_filtrados:
+                print(f"Nenhum arquivo encontrado com prefixo: {prefixo}")
+                continue
+
+            print(f"Encontrados {len(arquivos_filtrados)} arquivo(s) com prefixo {prefixo}")
+            
+            # Selecionar o mais recente
+            arquivo_mais_recente = max(arquivos_filtrados, key=extrair_data_hora)
+            tecnologia = prefixo.split('_')[0]
+            pasta_destino = os.path.join(local_base_dir, tecnologia)
+            caminho_arquivo_temp = os.path.join(pasta_destino, arquivo_mais_recente)
+
+            print(f"Arquivo mais recente: {arquivo_mais_recente}")
+            
+            # Baixar o arquivo
+            try:
+                sftp.get(arquivo_mais_recente, caminho_arquivo_temp)
+                print(f"Arquivo {arquivo_mais_recente} baixado para {caminho_arquivo_temp}")
+                
+                # Verificar se é um arquivo ZIP e descompactar
+                if arquivo_mais_recente.lower().endswith('.zip'):
+                    print(f"Descompactando arquivo ZIP...")
+                    descompactar_arquivo(caminho_arquivo_temp, pasta_destino)
+                else:
+                    print(f"Arquivo {arquivo_mais_recente} não é ZIP, mantendo como está")
+                    
+            except Exception as e:
+                print(f"Erro ao baixar/processar {arquivo_mais_recente}: {e}")
+
+except Exception as e:
+    print(f"Erro na conexão SFTP: {e}")
+
+print("\nProcessamento concluído!")
+
+# Relatório final
+print("\n" + "="*50)
+print("RELATÓRIO FINAL")
+print("="*50)
+for prefix in prefixos:
+    tecnologia = prefix.split('_')[0]
+    pasta_tecnologia = os.path.join(local_base_dir, tecnologia)
+    if os.path.exists(pasta_tecnologia):
+        arquivos_na_pasta = os.listdir(pasta_tecnologia)
+        print(f"{tecnologia}: {len(arquivos_na_pasta)} arquivo(s) na pasta")
+        for arquivo in arquivos_na_pasta[:5]:  # Mostra apenas os primeiros 5 para não poluir
+            print(f"  - {arquivo}")
+        if len(arquivos_na_pasta) > 5:
+            print(f"  ... e mais {len(arquivos_na_pasta) - 5} arquivo(s)")
+print("="*50)
