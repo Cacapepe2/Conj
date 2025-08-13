@@ -15,7 +15,38 @@ import warnings
 warnings.filterwarnings('ignore')
 
 # === Leitura do CSV ===
-df = pd.read_csv('INFO-Sumario_Taxa_Setor-2025-07-15.csv', encoding='ISO-8859-1', sep=';')
+df = pd.read_csv('INFO-Sumario_Taxa_Setor-2025-08-06.csv', encoding='ISO-8859-1', sep=';')
+
+# === CRIAÇÃO DA CHAVE ÚNICA ===
+print(f"=== CRIANDO CHAVE ÚNICA ===")
+
+# Verificar se as colunas necessárias existem
+required_cols = ['Freq', 'Chave_Site', 'Setor']
+missing_cols = [col for col in required_cols if col not in df.columns]
+
+if missing_cols:
+    print(f"❌ ERRO: Colunas obrigatórias não encontradas: {missing_cols}")
+    print(f"Colunas disponíveis: {list(df.columns)}")
+    exit()
+
+# Criar chave única
+df['ID_UNICO'] = df['Freq'].astype(str) + '_' + df['Chave_Site'].astype(str) + '_' + df['Setor'].astype(str)
+
+
+print(f"✅ Chave única criada: ID_UNICO")
+print(f"Exemplo de IDs únicos:")
+for i, id_unico in enumerate(df['ID_UNICO'].head(5)):
+    print(f"  {i+1}. {id_unico}")
+
+# Verificar duplicatas
+duplicatas = df['ID_UNICO'].duplicated().sum()
+if duplicatas > 0:
+    print(f"⚠️  AVISO: Encontradas {duplicatas} duplicatas na chave única!")
+    print("Removendo duplicatas (mantendo primeira ocorrência)...")
+    df = df.drop_duplicates(subset='ID_UNICO', keep='first')
+    print(f"Dados após remoção de duplicatas: {len(df)} registros")
+else:
+    print(f"✅ Nenhuma duplicata encontrada - {len(df)} registros únicos")
 
 # === Colunas de interesse ===
 indices_cols = [
@@ -31,10 +62,16 @@ indices_cols = [
 
 # === Conversão dos dados ===
 for col in indices_cols:
-    df[col] = pd.to_numeric(df[col].astype(str).str.replace(',', '.').str.strip(), errors='coerce')
+    if col in df.columns:
+        df[col] = pd.to_numeric(df[col].astype(str).str.replace(',', '.').str.strip(), errors='coerce')
 
-print(f"=== DIAGNÓSTICO DOS DADOS ===")
+# Filtrar apenas colunas que existem no DataFrame
+indices_cols = [col for col in indices_cols if col in df.columns]
+
+print(f"\n=== DIAGNÓSTICO DOS DADOS ===")
 print(f"Shape original: {df.shape}")
+print(f"Colunas de índices encontradas: {len(indices_cols)}")
+print(f"IDs únicos: {df['ID_UNICO'].nunique()}")
 
 # === Análise de missings ===
 missing_analysis = df[indices_cols].isnull().sum()
@@ -56,10 +93,13 @@ for col in indices_cols:
 indices_cols = cols_to_keep
 print(f"Colunas mantidas: {len(indices_cols)}")
 
+if len(indices_cols) == 0:
+    print("❌ ERRO: Nenhuma coluna de índices válida encontrada!")
+    exit()
+
 # === Análise de variância ===
-# Remover colunas com baixa variância (todos valores iguais ou quase)
 df_temp = df[indices_cols].fillna(df[indices_cols].median())
-variance_selector = VarianceThreshold(threshold=0.01)  # Variância mínima
+variance_selector = VarianceThreshold(threshold=0.01)
 variance_selector.fit(df_temp)
 
 low_variance_cols = [col for i, col in enumerate(indices_cols) 
@@ -96,12 +136,12 @@ for col in indices_cols:
     if before != after:
         print(f"{col}: removidos {before-after} outliers extremos")
 
-print(f"Dados após limpeza: {len(df_clean)} linhas ({len(df_clean)/len(df)*100:.1f}% do original)")
+print(f"Dados após limpeza: {len(df_clean)} IDs únicos ({len(df_clean)/len(df)*100:.1f}% do original)")
 
 # === Remoção de correlação alta ===
 corr_matrix = df_clean[indices_cols].corr().abs()
 upper = corr_matrix.where(np.triu(np.ones(corr_matrix.shape), k=1).astype(bool))
-to_drop = [column for column in upper.columns if any(upper[column] > 0.8)]  # Menor threshold
+to_drop = [column for column in upper.columns if any(upper[column] > 0.8)]
 filtered_cols = [col for col in indices_cols if col not in to_drop]
 
 if to_drop:
@@ -155,7 +195,7 @@ for eps in eps_values:
         n_noise = list(labels).count(-1)
         noise_pct = n_noise / len(labels) * 100
         
-        if n_clusters > 1 and noise_pct < 30:  # Menos de 30% ruído
+        if n_clusters > 1 and noise_pct < 30:
             try:
                 if -1 in labels:
                     mask = labels != -1
@@ -177,7 +217,7 @@ for eps in eps_values:
 
 # 3. HDBSCAN mais conservador
 print("\n3. TESTANDO HDBSCAN (CONSERVADOR):")
-min_cluster_sizes = [50, 100, 200]  # Clusters maiores
+min_cluster_sizes = [50, 100, 200]
 min_samples_values = [5, 10, 20]
 
 best_hdbscan_score = -1
@@ -262,6 +302,72 @@ X_pca_viz = pca_viz.fit_transform(X_scaled)
 df_result['pca_1'] = X_pca_viz[:, 0]
 df_result['pca_2'] = X_pca_viz[:, 1]
 
+# === ANÁLISE DETALHADA DO PCA ===
+print(f"\n=== ANÁLISE DETALHADA DO PCA ===")
+
+# 1. Variância explicada por cada componente
+variancia_explicada = pca_viz.explained_variance_ratio_
+print(f"PCA Component 1 (Eixo X): explica {variancia_explicada[0]*100:.1f}% da variação")
+print(f"PCA Component 2 (Eixo Y): explica {variancia_explicada[1]*100:.1f}% da variação")
+print(f"Total explicado: {sum(variancia_explicada)*100:.1f}% da variação original")
+
+# 2. Quais índices mais influenciam cada componente
+componentes = pca_viz.components_  # Shape: (2, n_features)
+
+print(f"\n--- PCA COMPONENT 1 (Eixo X) ---")
+print("Índices que MAIS influenciam este eixo:")
+# Pegar os 5 índices com maior peso (positivo ou negativo)
+component1_weights = componentes[0]
+indices_importantes_c1 = []
+for i, peso in enumerate(component1_weights):
+    indices_importantes_c1.append((filtered_cols[i], peso))
+
+# Ordenar por valor absoluto (importância)
+indices_importantes_c1.sort(key=lambda x: abs(x[1]), reverse=True)
+
+for indice, peso in indices_importantes_c1[:5]:
+    sinal = "↑" if peso > 0 else "↓"
+    print(f"  {indice}: {peso:.3f} {sinal}")
+
+print(f"\n--- PCA COMPONENT 2 (Eixo Y) ---")
+print("Índices que MAIS influenciam este eixo:")
+component2_weights = componentes[1]
+indices_importantes_c2 = []
+for i, peso in enumerate(component2_weights):
+    indices_importantes_c2.append((filtered_cols[i], peso))
+
+indices_importantes_c2.sort(key=lambda x: abs(x[1]), reverse=True)
+
+for indice, peso in indices_importantes_c2[:5]:
+    sinal = "↑" if peso > 0 else "↓"
+    print(f"  {indice}: {peso:.3f} {sinal}")
+
+# 3. Interpretação prática
+print(f"\n=== INTERPRETAÇÃO PRÁTICA ===")
+print("🔍 COMO LER O GRÁFICO:")
+print(f"📈 Eixo X (PCA 1): Representa principalmente '{indices_importantes_c1[0][0].replace('Indice_', '')}'")
+print(f"📊 Eixo Y (PCA 2): Representa principalmente '{indices_importantes_c2[0][0].replace('Indice_', '')}'")
+
+print(f"\n🎯 SIGNIFICADO DAS POSIÇÕES:")
+print(f"• Pontos à DIREITA: Problemas em {indices_importantes_c1[0][0].replace('Indice_', '')}")
+print(f"• Pontos à ESQUERDA: Melhores em {indices_importantes_c1[0][0].replace('Indice_', '')}")
+print(f"• Pontos ACIMA: Problemas em {indices_importantes_c2[0][0].replace('Indice_', '')}")
+print(f"• Pontos ABAIXO: Melhores em {indices_importantes_c2[0][0].replace('Indice_', '')}")
+
+# 4. Criar um "mapa de interpretação"
+print(f"\n=== MAPA DE INTERPRETAÇÃO DO GRÁFICO ===")
+print(f"┌─────────────────┬─────────────────┐")
+print(f"│  QUADRANTE II   │  QUADRANTE I    │")
+print(f"│ (X-, Y+)        │ (X+, Y+)        │")
+print(f"│ Baixo {indices_importantes_c1[0][0].replace('Indice_', '')[:8]}│ Alto {indices_importantes_c1[0][0].replace('Indice_', '')[:8]} │")
+print(f"│ Alto {indices_importantes_c2[0][0].replace('Indice_', '')[:8]} │ Alto {indices_importantes_c2[0][0].replace('Indice_', '')[:8]} │")
+print(f"├─────────────────┼─────────────────┤")
+print(f"│  QUADRANTE III  │  QUADRANTE IV   │")
+print(f"│ (X-, Y-)        │ (X+, Y-)        │")
+print(f"│ Baixo {indices_importantes_c1[0][0].replace('Indice_', '')[:8]}│ Alto {indices_importantes_c1[0][0].replace('Indice_', '')[:8]} │")
+print(f"│ Baixo {indices_importantes_c2[0][0].replace('Indice_', '')[:8]}│ Baixo {indices_importantes_c2[0][0].replace('Indice_', '')[:8]}│")
+print(f"└─────────────────┴─────────────────┘")
+
 # === Análise final ===
 print(f"\n=== RESULTADO FINAL ===")
 n_clusters = len(set(final_labels)) - (1 if -1 in final_labels else 0)
@@ -280,38 +386,215 @@ for cluster in sorted(cluster_counts.keys()):
     count = cluster_counts[cluster]
     pct = count / len(final_labels) * 100
     if cluster == -1:
-        print(f"  Ruído: {count} setores ({pct:.1f}%)")
+        print(f"  Ruído: {count} IDs únicos ({pct:.1f}%)")
     else:
-        print(f"  Cluster {cluster}: {count} setores ({pct:.1f}%)")
+        print(f"  Cluster {cluster}: {count} IDs únicos ({pct:.1f}%)")
 
-# === Análise dos clusters ===
-if n_clusters > 0 and n_clusters < 20:  # Só analizar se temos um número razoável de clusters
-    print(f"\n=== ANÁLISE DOS CLUSTERS ===")
+# === FUNÇÃO PARA GERAR NOMES DINÂMICOS DOS CLUSTERS ===
+def gerar_nomes_clusters_dinamicos(df_result, final_labels, filtered_cols):
+    """
+    Gera nomes e descrições dinâmicas para os clusters baseado nos dados reais
+    """
+    cluster_info = {}
     
-    for cluster_id in sorted(set(final_labels)):
+    # Calcular médias globais para comparação
+    global_means = df_result[filtered_cols].mean()
+    
+    unique_clusters = sorted(set(final_labels))
+    
+    # Analisar cada cluster
+    for cluster_id in unique_clusters:
         if cluster_id == -1:
+            cluster_info[cluster_id] = {
+                'nome': 'OUTLIERS',
+                'descricao': 'IDs únicos com padrões atípicos - Revisar individualmente',
+                'prioridade': 'ALTA'
+            }
             continue
             
+        # Dados do cluster
         cluster_data = df_result[df_result['cluster'] == cluster_id]
-        print(f"\n--- CLUSTER {cluster_id} ({len(cluster_data)} setores) ---")
+        cluster_means = cluster_data[filtered_cols].mean()
         
-        # Médias dos índices
-        medias = cluster_data[filtered_cols].mean()
-        piores = medias.nlargest(3)
-        melhores = medias.nsmallest(3)
+        # Comparar com média global
+        desvios = cluster_means - global_means
         
-        print("Índices mais problemáticos:")
-        for idx, valor in piores.items():
-            print(f"  {idx}: {valor:.2f}")
+        # Identificar características principais
+        piores_indices = desvios.nlargest(3)  # Índices mais altos (piores)
+        melhores_indices = desvios.nsmallest(3)  # Índices mais baixos (melhores)
         
-        print("Índices com melhor performance:")
-        for idx, valor in melhores.items():
-            print(f"  {idx}: {valor:.2f}")
+        # Calcular score geral do cluster
+        score_geral = cluster_means.mean()
+        
+        # Determinar categoria baseada no score
+        if score_geral >= 7:
+            categoria = 'CRÍTICO'
+            prioridade = 'ALTA'
+        elif score_geral >= 5:
+            categoria = 'PROBLEMÁTICO'
+            prioridade = 'MÉDIA-ALTA'
+        elif score_geral >= 3:
+            categoria = 'MODERADO'
+            prioridade = 'MÉDIA'
+        else:
+            categoria = 'BOM'
+            prioridade = 'BAIXA'
+        
+        # Identificar problema principal
+        problema_principal = piores_indices.index[0].replace('Indice_', '').replace('_', ' ')
+        
+        # Criar nome descritivo
+        nome = f"{categoria} - {problema_principal}"
+        
+        # Criar descrição detalhada
+        descricao = f"Score médio: {score_geral:.2f} | "
+        descricao += f"Principais problemas: {', '.join([idx.replace('Indice_', '') for idx in piores_indices.index[:2]])}"
+        
+        cluster_info[cluster_id] = {
+            'nome': nome,
+            'descricao': descricao,
+            'prioridade': prioridade,
+            'score': score_geral
+        }
+    
+    return cluster_info
+
+# === Análise dinâmica dos clusters ===
+if n_clusters > 0 and n_clusters < 20:
+    print(f"\n=== ANÁLISE DINÂMICA DOS CLUSTERS ===")
+    
+    # Gerar informações dinâmicas
+    cluster_info_dinamico = gerar_nomes_clusters_dinamicos(df_result, final_labels, filtered_cols)
+    
+    for cluster_id in sorted(set(final_labels)):
+        info = cluster_info_dinamico[cluster_id]
+        cluster_data = df_result[df_result['cluster'] == cluster_id]
+        
+        print(f"\n--- CLUSTER {cluster_id}: {info['nome']} ---")
+        print(f"IDs únicos: {len(cluster_data)}")
+        print(f"Prioridade: {info['prioridade']}")
+        print(f"Descrição: {info['descricao']}")
+        
+        if cluster_id != -1:
+            # Mostrar médias dos principais índices
+            cluster_means = cluster_data[filtered_cols].mean()
+            print("Top 3 índices mais problemáticos:")
+            for idx, valor in cluster_means.nlargest(3).items():
+                print(f"  {idx.replace('Indice_', '')}: {valor:.2f}")
+
+# === Preparação do resultado final DINÂMICO ===
+print(f"\n=== PREPARANDO RESULTADO FINAL DINÂMICO ===")
+
+# Usar a chave única criada
+id_unico_col = 'ID_UNICO'
+print(f"Usando chave única: {id_unico_col}")
+
+# Criar DataFrame de mapeamento cluster
+cluster_mapping = df_result[[id_unico_col, 'cluster']].copy()
+
+# Fazer merge com DataFrame original
+df_original_completo = df.copy()
+# Garantir que não tenha IDs únicos duplicados
+cluster_mapping = cluster_mapping.drop_duplicates(subset=id_unico_col)
+
+# Garantir que o tipo é o mesmo
+cluster_mapping[id_unico_col] = cluster_mapping[id_unico_col].astype(df_original_completo[id_unico_col].dtype)
+
+resultado_completo = df_original_completo.merge(
+    cluster_mapping, 
+    on=id_unico_col, 
+    how='left'
+)
+
+# Preencher NaN nos clusters
+resultado_completo['cluster'] = resultado_completo['cluster'].fillna(-999)
+
+# === APLICAR INFORMAÇÕES DINÂMICAS ===
+def mapear_cluster_info(cluster_id):
+    if cluster_id == -999:
+        return "REMOVIDO_LIMPEZA - Outlier extremo removido na pré-análise"
+    elif cluster_id in cluster_info_dinamico:
+        info = cluster_info_dinamico[cluster_id]
+        return f"{info['nome']} - Prioridade {info['prioridade']}"
+    else:
+        return "DESCONHECIDO"
+
+# Aplicar mapeamento dinâmico
+resultado_completo['cluster_nome'] = resultado_completo['cluster'].apply(mapear_cluster_info)
+
+# Reorganizar colunas - colocar as colunas identificadoras primeiro
+colunas_identificadoras = [id_unico_col, 'Freq', 'Chave_Site', 'Setor', 'cluster', 'cluster_nome']
+outras_colunas = [col for col in resultado_completo.columns if col not in colunas_identificadoras]
+colunas_ordenadas = colunas_identificadoras + outras_colunas
+
+resultado_final_completo = resultado_completo[colunas_ordenadas].copy()
+
+# === Salvar resultado ===
+timestamp = pd.Timestamp.now().strftime("%Y%m%d_%H%M%S")
+filename = f'clustering_resultado_ID_UNICO_{timestamp}.csv'
+
+resultado_final_completo.to_csv(filename, index=False, sep=';', encoding='utf-8')
+
+print(f"✅ Arquivo salvo: '{filename}'")
+print(f"📊 Colunas no arquivo: {len(resultado_final_completo.columns)}")
+print(f"📋 Linhas no arquivo: {len(resultado_final_completo)}")
+
+# === Estatísticas do resultado final ===
+print(f"\n=== ESTATÍSTICAS FINAIS DINÂMICAS ===")
+cluster_stats = resultado_final_completo['cluster'].value_counts().sort_index()
+
+for cluster_id, count in cluster_stats.items():
+    pct = count / len(resultado_final_completo) * 100
+    nome = mapear_cluster_info(cluster_id)
+    print(f"Cluster {cluster_id}: {count:,} IDs únicos ({pct:.1f}%) - {nome}")
+
+# === ANÁLISE POR COMPONENTES DA CHAVE ÚNICA ===
+print(f"\n=== ANÁLISE POR COMPONENTES DA CHAVE ÚNICA ===")
+
+# Análise por Frequência
+print("\n📡 Distribuição por FREQUÊNCIA:")
+freq_analysis = resultado_final_completo.groupby('Freq')['cluster'].value_counts().unstack(fill_value=0)
+for freq in freq_analysis.index:
+    total = freq_analysis.loc[freq].sum()
+    print(f"  Freq {freq}: {total} IDs únicos")
+    # Mostrar top 2 clusters para cada frequência
+    top_clusters = freq_analysis.loc[freq].nlargest(2)
+    for cluster_id, count in top_clusters.items():
+        if count > 0:
+            pct = count / total * 100
+            nome = mapear_cluster_info(cluster_id)
+            print(f"    Cluster {cluster_id}: {count} ({pct:.1f}%) - {nome[:30]}...")
+
+# Análise por Site
+print("\n🏗️ Distribuição por SITE (Top 10):")
+site_analysis = resultado_final_completo.groupby('Chave_Site').agg({
+    'cluster': lambda x: x.mode().iloc[0] if len(x.mode()) > 0 else -999,
+    'ID_UNICO': 'count'
+}).rename(columns={'ID_UNICO': 'total_ids'}).sort_values('total_ids', ascending=False)
+
+for site, row in site_analysis.head(10).iterrows():
+    cluster_predominante = row['cluster']
+    total = row['total_ids']
+    nome_cluster = mapear_cluster_info(cluster_predominante)
+    print(f"  Site {site}: {total} IDs únicos - Cluster predominante: {cluster_predominante} ({nome_cluster[:30]}...)")
+
+# Análise por Setor
+print("\n📶 Distribuição por SETOR:")
+setor_analysis = resultado_final_completo.groupby('Setor')['cluster'].value_counts().unstack(fill_value=0)
+for setor in sorted(setor_analysis.index):
+    total = setor_analysis.loc[setor].sum()
+    print(f"  Setor {setor}: {total} IDs únicos")
+    # Mostrar cluster predominante
+    cluster_predominante = setor_analysis.loc[setor].idxmax()
+    count_predominante = setor_analysis.loc[setor].max()
+    pct = count_predominante / total * 100
+    nome = mapear_cluster_info(cluster_predominante)
+    print(f"    Cluster predominante: {cluster_predominante} ({count_predominante} - {pct:.1f}%) - {nome[:40]}...")
 
 # === Visualização ===
-plt.figure(figsize=(12, 8))
+plt.figure(figsize=(15, 10))
 
-if n_clusters <= 20:  # Só plotar se não temos muitos clusters
+if n_clusters <= 20:
     unique_clusters = sorted(set(final_labels))
     colors = plt.cm.tab20(np.linspace(0, 1, len(unique_clusters)))
     
@@ -319,112 +602,66 @@ if n_clusters <= 20:  # Só plotar se não temos muitos clusters
         cluster_data = df_result[df_result['cluster'] == cluster_id]
         if cluster_id == -1:
             plt.scatter(cluster_data['pca_1'], cluster_data['pca_2'], 
-                       c='red', marker='x', s=30, alpha=0.6, label=f'Ruído ({len(cluster_data)})')
+                       c='red', marker='x', s=10, alpha=0.6, 
+                       label=f'Ruído ({len(cluster_data)})')
         else:
+            nome_cluster = cluster_info_dinamico[cluster_id]['nome'][:20]  # Truncar para visualização
             plt.scatter(cluster_data['pca_1'], cluster_data['pca_2'],
-                       c=[colors[i]], s=50, alpha=0.7, 
-                       label=f'Cluster {cluster_id} ({len(cluster_data)})')
+                       c=[colors[i]], s=15, alpha=0.7, 
+                       label=f'C{cluster_id}: {nome_cluster} ({len(cluster_data)})')
     
     plt.xlabel('PCA 1')
     plt.ylabel('PCA 2')
-    plt.title(f'Clustering Final - {best_algorithm}')
-    plt.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
+    plt.title(f'Clustering por ID_ÚNICO - {best_algorithm} | Score: {algorithms_scores[best_algorithm]:.3f}')
+    plt.legend(bbox_to_anchor=(1.05, 1), loc='upper left', fontsize=8)
     plt.grid(True, alpha=0.3)
 else:
-    # Se muitos clusters, fazer visualização simplificada
     plt.scatter(df_result['pca_1'], df_result['pca_2'], 
-               c=final_labels, cmap='tab20', s=50, alpha=0.7)
+               c=final_labels, cmap='tab20', s=30, alpha=0.7)
     plt.xlabel('PCA 1')
     plt.ylabel('PCA 2')
-    plt.title(f'Clustering Final - {best_algorithm} ({n_clusters} clusters)')
+    plt.title(f'Clustering por ID_ÚNICO - {best_algorithm} ({n_clusters} clusters)')
     plt.colorbar()
     plt.grid(True, alpha=0.3)
 
 plt.tight_layout()
 plt.show()
 
-# === Salvar resultados COMPLETOS ===
-# Primeiro, vamos mapear os clusters de volta para o DataFrame original
-print(f"\n=== PREPARANDO RESULTADO FINAL COMPLETO ===")
+# === RELATÓRIO DE QUALIDADE DOS DADOS ===
+print(f"\n=== RELATÓRIO DE QUALIDADE DOS DADOS ===")
+print(f"📋 Total de registros originais: {len(df):,}")
+print(f"🔑 IDs únicos criados: {df['ID_UNICO'].nunique():,}")
+print(f"🧹 IDs únicos após limpeza: {len(df_clean):,}")
+print(f"📊 IDs únicos com cluster: {len(df_result):,}")
+print(f"📁 IDs únicos no arquivo final: {len(resultado_final_completo):,}")
 
-# Identificar coluna de setor
-if 'SETOR' in df.columns:
-    setor_col = 'SETOR'
-elif 'Setor' in df.columns:
-    setor_col = 'Setor'
-else:
-    setor_cols = [col for col in df.columns if 'setor' in col.lower()]
-    if setor_cols:
-        setor_col = setor_cols[0]
-        print(f"Usando coluna de setor: {setor_col}")
-    else:
-        # Se não encontrar coluna de setor, usar índice original
-        df['SETOR_ID'] = df.index
-        setor_col = 'SETOR_ID'
-        print("Criando coluna SETOR_ID baseada no índice")
+duplicatas_freq = df.groupby(['Freq', 'Chave_Site']).size()
+sites_com_duplicatas = (duplicatas_freq > 3).sum()  # Sites com mais de 3 setores
+print(f"🏗️ Sites únicos: {df['Chave_Site'].nunique():,}")
+print(f"📡 Frequências únicas: {df['Freq'].nunique()}")
+print(f"📶 Setores únicos: {df['Setor'].nunique()}")
+print(f"⚠️ Sites com mais de 3 setores: {sites_com_duplicatas}")
 
-# Criar DataFrame de mapeamento cluster
-cluster_mapping = df_result[[setor_col, 'cluster']].copy()
+# === RECOMENDAÇÕES FINAIS ===
+print(f"\n=== RECOMENDAÇÕES FINAIS ===")
+print(f"✅ DADOS PROCESSADOS COM SUCESSO!")
+print(f"🔑 Chave única ID_UNICO criada: Freq + Chave_Site + Setor")
+print(f"📊 {n_clusters} clusters identificados dinamicamente")
+print(f"🎯 Priorize clusters com classificação 'CRÍTICO' e 'PROBLEMÁTICO'")
+print(f"📁 Arquivo salvo: '{filename}' - Pronto para análise!")
 
-# Fazer merge com DataFrame original para manter TODAS as colunas
-df_original_completo = df.copy()
+print(f"\n🔍 PRÓXIMOS PASSOS SUGERIDOS:")
+print(f"1. Analise os clusters CRÍTICOS primeiro (prioridade ALTA)")
+print(f"2. Investigue outliers (-1) individualmente")
+print(f"3. Compare performance entre sites da mesma frequência")
+print(f"4. Monitore evolução temporal dos clusters")
+print(f"5. Use ID_UNICO para rastreamento individual")
 
-# Merge para adicionar informações de cluster ao DataFrame original
-resultado_completo = df_original_completo.merge(
-    cluster_mapping, 
-    on=setor_col, 
-    how='left'  # Left join para manter todos os setores originais
-)
-
-# Preencher NaN nos clusters (setores que foram removidos durante limpeza)
-resultado_completo['cluster'] = resultado_completo['cluster'].fillna(-999)  # -999 = removido durante limpeza
-
-# Reorganizar colunas: setor, cluster, depois todas as outras
-colunas_ordenadas = [setor_col, 'cluster'] + [col for col in resultado_completo.columns 
-                                              if col not in [setor_col, 'cluster']]
-
-resultado_final_completo = resultado_completo[colunas_ordenadas].copy()
-
-# Adicionar metadados do cluster
-cluster_info = {
-    0: "CRÍTICO - Prioridade ALTA",
-    1: "MODERADO - Prioridade MÉDIA", 
-    2: "UE/DELAY - Prioridade MÉDIA",
-    3: "BOM - Prioridade BAIXA",
-    -999: "REMOVIDO_LIMPEZA - Outlier extremo"
-}
-
-resultado_final_completo['cluster_nome'] = resultado_final_completo['cluster'].map(cluster_info)
-resultado_final_completo['cluster_nome'] = resultado_final_completo['cluster_nome'].fillna('DESCONHECIDO')
-
-# Salvar resultado completo
-resultado_final_completo.to_csv('clustering_resultado_completo.csv', index=False, sep=';', encoding='utf-8')
-
-print(f"✅ Arquivo completo salvo: 'clustering_resultado_completo.csv'")
-print(f"📊 Colunas no arquivo: {len(resultado_final_completo.columns)}")
-print(f"📋 Linhas no arquivo: {len(resultado_final_completo)}")
-print(f"🏗️ Estrutura: [{setor_col}] + [cluster] + [cluster_nome] + [todas as {len(df.columns)} colunas originais]")
-
-# Estatísticas do resultado final
-print(f"\n=== ESTATÍSTICAS DO RESULTADO COMPLETO ===")
-cluster_stats = resultado_final_completo['cluster'].value_counts().sort_index()
-for cluster_id, count in cluster_stats.items():
-    pct = count / len(resultado_final_completo) * 100
-    nome = cluster_info.get(cluster_id, 'DESCONHECIDO')
-    print(f"Cluster {cluster_id}: {count:,} setores ({pct:.1f}%) - {nome}")
-
-# Mostrar primeiras colunas como exemplo
-print(f"\n=== PREVIEW DAS PRIMEIRAS COLUNAS ===")
-preview_cols = resultado_final_completo.columns[:10].tolist()
-if len(resultado_final_completo.columns) > 10:
-    preview_cols.append(f"... e mais {len(resultado_final_completo.columns) - 10} colunas")
-print(f"Colunas: {preview_cols}")
-
-print(f"\nArquivos salvos:")
-print(f"📄 'clustering_resultado_completo.csv' - TODAS as colunas originais + cluster")
-print(f"📊 Algoritmo: {best_algorithm}")
-print(f"🎯 Score: {algorithms_scores[best_algorithm]:.3f}")
-print(f"🔢 Clusters: {n_clusters}")
-print(f"🚫 Ruído: {noise_pct:.1f}%")
-print(f"📋 Total de setores: {len(resultado_final_completo):,}")
-print(f"📊 Total de colunas: {len(resultado_final_completo.columns)}")
+print(f"\n🎉 ANÁLISE COMPLETA COM CHAVE ÚNICA!")
+print(f"📄 Arquivo final: '{filename}'")
+print(f"🤖 Algoritmo: {best_algorithm}")
+print(f"📊 Score: {algorithms_scores[best_algorithm]:.3f}")
+print(f"🔢 Clusters identificados: {n_clusters}")
+print(f"🔑 IDs únicos processados: {len(resultado_final_completo):,}")
+print(f"📈 Todos os clusters são nomeados DINAMICAMENTE baseados nos dados reais!")
+print(f"🔄 Código adaptado para usar chave única Freq+Chave_Site+Setor!")
