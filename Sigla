@@ -1,0 +1,649 @@
+import pandas as pd
+import os
+import pickle
+from datetime import datetime, timedelta
+import re
+
+def carregar_dados_science_com_cache(estados_selecionados=['RJ', 'ES', 'MG'], usar_cache=True, cache_expira_dias=7):
+    """
+    Carrega dados do Science com sistema de cache por estado
+    
+    Args:
+        estados_selecionados: Lista com estados desejados ['RJ', 'ES', 'MG']
+        usar_cache: Se deve usar cache (True/False)
+        cache_expira_dias: Dias para expirar o cache
+    
+    Returns:
+        DataFrame concatenado dos estados selecionados
+    """
+    
+    # Definir caminhos base por estado
+    caminhos_por_estado = {
+        'RJ': {
+            '2G': r"C:\Users\40417519\Telefonica\Engenharia de RF LESTE (RJ ES BA SE) - Science\Base_dados\Science_2G_RJ.xlsx",
+            '3G': r"C:\Users\40417519\Telefonica\Engenharia de RF LESTE (RJ ES BA SE) - Science\Base_dados\Science_3G_RJ.xlsx", 
+            '4G': r"C:\Users\40417519\Telefonica\Engenharia de RF LESTE (RJ ES BA SE) - Science\Base_dados\Science_4G_RJ.xlsx",
+            '5G': r"C:\Users\40417519\Telefonica\Engenharia de RF LESTE (RJ ES BA SE) - Science\Base_dados\Science_5G_RJ.xlsx",
+            'IoT': r"C:\Users\40417519\Telefonica\Engenharia de RF LESTE (RJ ES BA SE) - Science\Base_dados\Science_IoT_RJ.xlsx"
+        },
+        'ES': {
+            '2G': r"C:\Users\40417519\Telefonica\Engenharia de RF LESTE (RJ ES BA SE) - Science\Base_dados\Science_2G_ES.xlsx",
+            '3G': r"C:\Users\40417519\Telefonica\Engenharia de RF LESTE (RJ ES BA SE) - Science\Base_dados\Science_3G_ES.xlsx",
+            '4G': r"C:\Users\40417519\Telefonica\Engenharia de RF LESTE (RJ ES BA SE) - Science\Base_dados\Science_4G_ES.xlsx",
+            '5G': r"C:\Users\40417519\Telefonica\Engenharia de RF LESTE (RJ ES BA SE) - Science\Base_dados\Science_5G_ES.xlsx",
+            'IoT': r"C:\Users\40417519\Telefonica\Engenharia de RF LESTE (RJ ES BA SE) - Science\Base_dados\Science_IoT_ES.xlsx"
+        },
+        'MG': {
+            '2G': r"C:\Users\40417519\Telefonica\Engenharia de RF LESTE (RJ ES BA SE) - Science\Base_dados\Science_2G_MG.xlsx",
+            '3G': r"C:\Users\40417519\Telefonica\Engenharia de RF LESTE (RJ ES BA SE) - Science\Base_dados\Science_3G_MG.xlsx",
+            '4G': r"C:\Users\40417519\Telefonica\Engenharia de RF LESTE (RJ ES BA SE) - Science\Base_dados\Science_4G_MG.xlsx",
+            '5G': r"C:\Users\40417519\Telefonica\Engenharia de RF LESTE (RJ ES BA SE) - Science\Base_dados\Science_5G_MG.xlsx",
+            'IoT': r"C:\Users\40417519\Telefonica\Engenharia de RF LESTE (RJ ES BA SE) - Science\Base_dados\Science_IoT_MG.xlsx"
+        }
+    }
+    
+    # Caso você tenha arquivos únicos, use os caminhos originais
+    caminhos_unicos = [
+        r"C:\Users\40417519\Telefonica\Engenharia de RF LESTE (RJ ES BA SE) - Science\Base_dados\Science_2G.xlsx",
+        r"C:\Users\40417519\Telefonica\Engenharia de RF LESTE (RJ ES BA SE) - Science\Base_dados\Science_3G.xlsx",
+        r"C:\Users\40417519\Telefonica\Engenharia de RF LESTE (RJ ES BA SE) - Science\Base_dados\Science_4G.xlsx",
+        r"C:\Users\40417519\Telefonica\Engenharia de RF LESTE (RJ ES BA SE) - Science\Base_dados\Science_5G.xlsx",
+        r"C:\Users\40417519\Telefonica\Engenharia de RF LESTE (RJ ES BA SE) - Science\Base_dados\Science_IoT.xlsx"
+    ]
+    
+    # Criar diretório de cache se não existir
+    cache_dir = "cache_science"
+    if not os.path.exists(cache_dir):
+        os.makedirs(cache_dir)
+    
+    dataframes = []
+    
+    # Verificar se existe separação por estado ou usar arquivo único
+    usar_arquivo_unico = True
+    for estado in estados_selecionados:
+        for tecnologia in ['2G', '3G', '4G', '5G', 'IoT']:
+            if estado in caminhos_por_estado and os.path.exists(caminhos_por_estado[estado][tecnologia]):
+                usar_arquivo_unico = False
+                break
+        if not usar_arquivo_unico:
+            break
+    
+    if usar_arquivo_unico:
+        print("Usando arquivos únicos do Science...")
+        # Carregar todos os arquivos e filtrar por estado depois
+        cache_file = os.path.join(cache_dir, f"science_completo.pkl")
+        
+        # Verificar cache
+        if usar_cache and os.path.exists(cache_file):
+            # Verificar se cache não expirou
+            cache_time = datetime.fromtimestamp(os.path.getmtime(cache_file))
+            if datetime.now() - cache_time < timedelta(days=cache_expira_dias):
+                print("Carregando dados do cache...")
+                with open(cache_file, 'rb') as f:
+                    df_total = pickle.load(f)
+                # Filtrar apenas os estados selecionados
+                if 'UF' in df_total.columns:
+                    df_total = df_total[df_total['UF'].isin(estados_selecionados)]
+                return df_total
+        
+        print("Cache expirado ou não existe. Carregando arquivos originais...")
+        # Carregar arquivos originais
+        for caminho in caminhos_unicos:
+            if os.path.exists(caminho):
+                try:
+                    print(f"Carregando {os.path.basename(caminho)}...")
+                    df_temp = pd.read_excel(caminho, usecols=["SIG_SITE", "SIG_ERB", "NUM_LATITUDE_DECIMAL", "NUM_LONGITUDE_DECIMAL"])
+                    dataframes.append(df_temp)
+                except Exception as e:
+                    print(f"Erro ao carregar {caminho}: {e}")
+        
+        # Concatenar todos os dataframes
+        if dataframes:
+            df_total = pd.concat(dataframes, ignore_index=True)
+            
+            # Salvar no cache
+            if usar_cache:
+                print("Salvando no cache...")
+                with open(cache_file, 'wb') as f:
+                    pickle.dump(df_total, f)
+            
+            # Filtrar estados se a coluna UF existir
+            if 'UF' in df_total.columns:
+                df_total = df_total[df_total['UF'].isin(estados_selecionados)]
+                
+            return df_total
+    else:
+        # Usar arquivos separados por estado
+        print("Usando arquivos separados por estado...")
+        for estado in estados_selecionados:
+            cache_file = os.path.join(cache_dir, f"science_{estado}.pkl")
+            
+            # Verificar cache para este estado
+            if usar_cache and os.path.exists(cache_file):
+                cache_time = datetime.fromtimestamp(os.path.getmtime(cache_file))
+                if datetime.now() - cache_time < timedelta(days=cache_expira_dias):
+                    print(f"Carregando {estado} do cache...")
+                    with open(cache_file, 'rb') as f:
+                        df_estado = pickle.load(f)
+                    dataframes.append(df_estado)
+                    continue
+            
+            # Carregar arquivos para este estado
+            print(f"Carregando arquivos do {estado}...")
+            df_estado_temp = []
+            for tecnologia in ['2G', '3G', '4G', '5G', 'IoT']:
+                caminho = caminhos_por_estado[estado][tecnologia]
+                if os.path.exists(caminho):
+                    try:
+                        df_temp = pd.read_excel(caminho, usecols=["SIG_SITE", "SIG_ERB", "NUM_LATITUDE_DECIMAL", "NUM_LONGITUDE_DECIMAL"])
+                        df_estado_temp.append(df_temp)
+                    except Exception as e:
+                        print(f"Erro ao carregar {caminho}: {e}")
+            
+            # Concatenar arquivos do estado
+            if df_estado_temp:
+                df_estado = pd.concat(df_estado_temp, ignore_index=True)
+                dataframes.append(df_estado)
+                
+                # Salvar cache do estado
+                if usar_cache:
+                    with open(cache_file, 'wb') as f:
+                        pickle.dump(df_estado, f)
+        
+        # Concatenar todos os estados
+        if dataframes:
+            df_total = pd.concat(dataframes, ignore_index=True)
+            return df_total
+    
+    return pd.DataFrame()  # Retorna dataframe vazio se nada foi carregado
+
+def gerar_sigla_site(nome_completo, uf, siglas_existentes):
+    """
+    Gera sigla do site seguindo as regras especificadas
+    
+    Args:
+        nome_completo: Nome completo do site (ex: "Nova Iguaçu - Vila Laje Lagoinha")
+        uf: Unidade Federativa (ex: "RJ")
+        siglas_existentes: Set com siglas já existentes
+    
+    Returns:
+        String com a sigla gerada (ex: "RJVLL")
+    """
+    
+    # Separar município da localização após o hífen
+    partes = nome_completo.split(' - ')
+    if len(partes) < 2:
+        # Se não tem hífen, usar o nome completo
+        municipio = ""
+        localizacao = nome_completo.strip()
+    else:
+        municipio = partes[0].strip()
+        localizacao = partes[1].strip()
+    
+    # Remover acentos e caracteres especiais da localização
+    localizacao_limpa = re.sub(r'[^\w\s]', '', localizacao)
+    localizacao_limpa = (localizacao_limpa.replace('ã', 'a').replace('á', 'a').replace('à', 'a')
+                        .replace('é', 'e').replace('ê', 'e').replace('í', 'i').replace('ó', 'o')
+                        .replace('ô', 'o').replace('ú', 'u').replace('ç', 'c').replace('ñ', 'n'))
+    
+    # Separar palavras da localização
+    palavras = [palavra for palavra in localizacao_limpa.split() if len(palavra) > 0]
+    
+    # Função auxiliar para gerar combinações
+    def tentar_sigla(combinacao):
+        sigla_teste = uf.upper() + combinacao.upper()
+        return sigla_teste if sigla_teste not in siglas_existentes else None
+    
+    # Estratégias de geração baseadas no número de palavras
+    if len(palavras) == 1:
+        # Uma palavra: usar as 3 primeiras letras
+        palavra = palavras[0]
+        sigla = tentar_sigla(palavra[:3])
+        if sigla:
+            return sigla
+            
+    elif len(palavras) == 2:
+        # Duas palavras: 
+        # 1ª tentativa: 2 letras da primeira + 1 da segunda
+        sigla = tentar_sigla(palavras[0][:2] + palavras[1][:1])
+        if sigla:
+            return sigla
+        
+        # 2ª tentativa: 1 letra da primeira + 2 da segunda
+        sigla = tentar_sigla(palavras[0][:1] + palavras[1][:2])
+        if sigla:
+            return sigla
+            
+    elif len(palavras) == 3:
+        # Três palavras:
+        # 1ª tentativa: 1 letra de cada palavra
+        sigla = tentar_sigla(palavras[0][:1] + palavras[1][:1] + palavras[2][:1])
+        if sigla:
+            return sigla
+        
+        # 2ª tentativa: 2 da primeira + 1 da segunda
+        sigla = tentar_sigla(palavras[0][:2] + palavras[1][:1])
+        if sigla:
+            return sigla
+            
+        # 3ª tentativa: 1 da primeira + 2 da segunda
+        sigla = tentar_sigla(palavras[0][:1] + palavras[1][:2])
+        if sigla:
+            return sigla
+            
+    elif len(palavras) >= 4:
+        # Quatro ou mais palavras:
+        # 1ª tentativa: 1 letra das 3 primeiras
+        sigla = tentar_sigla(palavras[0][:1] + palavras[1][:1] + palavras[2][:1])
+        if sigla:
+            return sigla
+            
+        # 2ª tentativa: 2 da primeira + 1 da segunda
+        sigla = tentar_sigla(palavras[0][:2] + palavras[1][:1])
+        if sigla:
+            return sigla
+            
+        # 3ª tentativa: 1 da primeira + 1 da segunda + 1 da terceira
+        sigla = tentar_sigla(palavras[0][:1] + palavras[1][:1] + palavras[2][:1])
+        if sigla:
+            return sigla
+            
+        # 4ª tentativa: usar a 4ª palavra
+        sigla = tentar_sigla(palavras[0][:1] + palavras[1][:1] + palavras[3][:1])
+        if sigla:
+            return sigla
+    
+    # Se todas as tentativas falharam, usar município como último recurso
+    if municipio:
+        municipio_limpo = re.sub(r'[^\w\s]', '', municipio)
+        municipio_limpo = (municipio_limpo.replace('ã', 'a').replace('á', 'a').replace('à', 'a')
+                          .replace('é', 'e').replace('ê', 'e').replace('í', 'i').replace('ó', 'o')
+                          .replace('ô', 'o').replace('ú', 'u').replace('ç', 'c').replace('ñ', 'n'))
+        
+        palavras_municipio = municipio_limpo.split()
+        
+        # Tentar combinações com município
+        for i in range(1, 4):  # 1, 2 ou 3 letras do município
+            if palavras_municipio and len(palavras_municipio[0]) >= i:
+                resto_letras = 3 - i
+                if palavras and len(palavras[0]) >= resto_letras:
+                    sigla = tentar_sigla(palavras_municipio[0][:i] + palavras[0][:resto_letras])
+                    if sigla:
+                        return sigla
+    
+    # Último recurso: usar números sequenciais
+    for num in range(1, 1000):
+        if len(palavras) > 0:
+            sigla = tentar_sigla(palavras[0][:2] + str(num))
+            if sigla:
+                return sigla
+        else:
+            sigla = tentar_sigla(uf[:2] + str(num))
+            if sigla:
+                return sigla
+    
+    # Se tudo falhar, usar timestamp
+    import time
+    timestamp = str(int(time.time()))[-3:]
+    return uf.upper() + timestamp
+
+def processar_siglas_sites(df_generica, df_science, nome_coluna_site='NOME_SITE', nome_coluna_uf='UF'):
+    """
+    Processa e adiciona siglas aos sites do dataframe genérica
+    
+    Args:
+        df_generica: DataFrame com dados genéricos incluindo nomes de sites
+        df_science: DataFrame do Science com siglas existentes
+        nome_coluna_site: Nome da coluna que contém os nomes dos sites
+        nome_coluna_uf: Nome da coluna que contém a UF
+        
+    Returns:
+        DataFrame genérica com nova coluna 'Nome_Master' (sigla do site)
+    """
+    
+    # Extrair siglas existentes do Science (assumindo que está na coluna SIG_SITE)
+    siglas_existentes = set()
+    if 'SIG_SITE' in df_science.columns:
+        siglas_existentes = set(df_science['SIG_SITE'].dropna().unique())
+        print(f"   Encontradas {len(siglas_existentes)} siglas existentes no Science")
+    
+    # Verificar se as colunas necessárias existem no df_generica
+    if nome_coluna_site not in df_generica.columns:
+        print(f"❌ Erro: Coluna '{nome_coluna_site}' não encontrada no DataFrame genérica")
+        print(f"   Colunas disponíveis: {list(df_generica.columns)}")
+        return df_generica
+        
+    if nome_coluna_uf not in df_generica.columns:
+        print(f"❌ Erro: Coluna '{nome_coluna_uf}' não encontrada no DataFrame genérica")
+        print(f"   Colunas disponíveis: {list(df_generica.columns)}")
+        return df_generica
+    
+    # Criar nova coluna Nome_Master para as siglas (substituir se já existir)
+    df_result = df_generica.copy()
+    if 'Nome_Master' in df_result.columns:
+        print("   ⚠️ Coluna 'Nome_Master' já existe, será substituída")
+    df_result['Nome_Master'] = ''
+    
+    # Processar cada linha
+    print("   🔄 Gerando siglas para os sites...")
+    total_sites = len(df_result)
+    
+    for index, row in df_result.iterrows():
+        # Obter dados da linha atual
+        nome_site = str(row[nome_coluna_site]) if pd.notna(row[nome_coluna_site]) else ''
+        uf = str(row[nome_coluna_uf]) if pd.notna(row[nome_coluna_uf]) else ''
+        
+        # Pular se dados essenciais estão vazios
+        if not nome_site or not uf:
+            print(f"   ⚠️ Linha {index + 1}: Dados incompletos (Nome: '{nome_site}', UF: '{uf}')")
+            continue
+        
+        # Gerar sigla única
+        sigla = gerar_sigla_site(nome_site, uf, siglas_existentes)
+        
+        # Adicionar a nova sigla ao conjunto de existentes
+        siglas_existentes.add(sigla)
+        
+        # Adicionar ao DataFrame
+        df_result.loc[index, 'Nome_Master'] = sigla
+        
+        # Log do progresso a cada 100 sites
+        if (index + 1) % 100 == 0:
+            porcentagem = ((index + 1) / total_sites) * 100
+            print(f"   📊 Processados {index + 1}/{total_sites} sites ({porcentagem:.1f}%)")
+    
+    # Estatísticas finais
+    siglas_geradas = len(df_result[df_result['Nome_Master'] != ''])
+    print(f"   ✅ Processamento concluído!")
+    print(f"   📊 {siglas_geradas}/{total_sites} siglas geradas com sucesso")
+    
+    return df_result
+
+def salvar_de_volta_para_excel(df_final, nome_arquivo_original, nome_planilha="a"):
+    """
+    Salva o DataFrame de volta para o arquivo Excel original
+    
+    Args:
+        df_final: DataFrame com as siglas processadas
+        nome_arquivo_original: Nome do arquivo Excel original
+        nome_planilha: Nome da planilha (sheet) a ser atualizada
+        
+    Returns:
+        bool: True se salvou com sucesso, False caso contrário
+    """
+    try:
+        print(f"   📝 Salvando de volta em '{nome_arquivo_original}', planilha '{nome_planilha}'...")
+        
+        # Verificar se o arquivo original existe
+        if not os.path.exists(nome_arquivo_original):
+            print(f"   ❌ Arquivo '{nome_arquivo_original}' não encontrado!")
+            return False
+        
+        # Criar backup do arquivo original
+        backup_nome = nome_arquivo_original.replace('.xlsx', '_backup.xlsx')
+        if not os.path.exists(backup_nome):
+            import shutil
+            shutil.copy2(nome_arquivo_original, backup_nome)
+            print(f"   💾 Backup criado: '{backup_nome}'")
+        
+        # Ler todas as planilhas do arquivo original
+        with pd.ExcelFile(nome_arquivo_original) as arquivo_excel:
+            todas_planilhas = {}
+            
+            # Carregar todas as planilhas existentes
+            for sheet_name in arquivo_excel.sheet_names:
+                if sheet_name == nome_planilha:
+                    # Usar o DataFrame processado para a planilha alvo
+                    todas_planilhas[sheet_name] = df_final
+                    print(f"   🔄 Planilha '{sheet_name}' será atualizada com {len(df_final)} registros")
+                else:
+                    # Manter outras planilhas inalteradas
+                    todas_planilhas[sheet_name] = pd.read_excel(arquivo_excel, sheet_name=sheet_name)
+                    print(f"   📋 Planilha '{sheet_name}' mantida inalterada")
+        
+        # Salvar todas as planilhas de volta
+        with pd.ExcelWriter(nome_arquivo_original, engine='openpyxl') as writer:
+            for sheet_name, df_sheet in todas_planilhas.items():
+                df_sheet.to_excel(writer, sheet_name=sheet_name, index=False)
+        
+        print(f"   ✅ Arquivo atualizado com sucesso!")
+        return True
+        
+    except Exception as e:
+        print(f"   ❌ Erro ao salvar arquivo: {e}")
+        
+        # Tentar salvar com nome alternativo
+        try:
+            nome_alternativo = nome_arquivo_original.replace('.xlsx', '_com_siglas.xlsx')
+            df_final.to_excel(nome_alternativo, index=False)
+            print(f"   💾 Dados salvos em arquivo alternativo: '{nome_alternativo}'")
+            return True
+        except Exception as e2:
+            print(f"   ❌ Erro ao salvar arquivo alternativo: {e2}")
+            return False
+
+def escolher_estados():
+    """
+    Interface interativa para o usuário escolher quais estados carregar
+    
+    Returns:
+        Lista com estados selecionados
+    """
+    print("\n=== SELEÇÃO DE ESTADOS ===")
+    print("Escolha quais estados você deseja carregar:")
+    print("1 - Apenas Rio de Janeiro (RJ)")
+    print("2 - Apenas Espírito Santo (ES)")
+    print("3 - Apenas Minas Gerais (MG)")
+    print("4 - Rio de Janeiro + Espírito Santo (RJ + ES)")
+    print("5 - Rio de Janeiro + Minas Gerais (RJ + MG)")
+    print("6 - Espírito Santo + Minas Gerais (ES + MG)")
+    print("7 - Todos os estados (RJ + ES + MG)")
+    print("8 - Personalizado (escolher individualmente)")
+    
+    opcoes_estados = {
+        '1': ['RJ'],
+        '2': ['ES'],
+        '3': ['MG'],
+        '4': ['RJ', 'ES'],
+        '5': ['RJ', 'MG'],
+        '6': ['ES', 'MG'],
+        '7': ['RJ', 'ES', 'MG'],
+    }
+    
+    while True:
+        try:
+            opcao = input("\nDigite sua opção (1-8): ").strip()
+            
+            if opcao in opcoes_estados:
+                estados = opcoes_estados[opcao]
+                print(f"Estados selecionados: {', '.join(estados)}")
+                return estados
+                
+            elif opcao == '8':
+                # Opção personalizada
+                print("\n=== SELEÇÃO PERSONALIZADA ===")
+                estados_disponiveis = ['RJ', 'ES', 'MG']
+                estados_escolhidos = []
+                
+                for estado in estados_disponiveis:
+                    while True:
+                        escolha = input(f"Incluir {estado}? (s/n): ").strip().lower()
+                        if escolha in ['s', 'sim', 'y', 'yes']:
+                            estados_escolhidos.append(estado)
+                            break
+                        elif escolha in ['n', 'não', 'nao', 'no']:
+                            break
+                        else:
+                            print("Por favor, digite 's' para sim ou 'n' para não.")
+                
+                if estados_escolhidos:
+                    print(f"Estados selecionados: {', '.join(estados_escolhidos)}")
+                    return estados_escolhidos
+                else:
+                    print("Nenhum estado selecionado! Escolha pelo menos um.")
+                    continue
+                    
+            else:
+                print("Opção inválida! Digite um número de 1 a 8.")
+                
+        except KeyboardInterrupt:
+            print("\n\nOperação cancelada pelo usuário.")
+            exit()
+        except Exception as e:
+            print(f"Erro na entrada: {e}")
+
+def escolher_configuracao_cache():
+    """
+    Permite ao usuário configurar o cache
+    
+    Returns:
+        Tuple (usar_cache, dias_expiracao)
+    """
+    print("\n=== CONFIGURAÇÃO DO CACHE ===")
+    print("O cache acelera execuções futuras salvando os dados já carregados.")
+    
+    while True:
+        try:
+            usar = input("Usar cache? (s/n) [padrão: s]: ").strip().lower()
+            if usar == '' or usar in ['s', 'sim', 'y', 'yes']:
+                usar_cache = True
+                break
+            elif usar in ['n', 'não', 'nao', 'no']:
+                usar_cache = False
+                return usar_cache, 0
+            else:
+                print("Digite 's' para sim ou 'n' para não.")
+    
+    if usar_cache:
+        while True:
+            try:
+                dias = input("Dias para expirar cache [padrão: 7]: ").strip()
+                if dias == '':
+                    dias_expiracao = 7
+                    break
+                else:
+                    dias_expiracao = int(dias)
+                    if dias_expiracao > 0:
+                        break
+                    else:
+                        print("Digite um número maior que zero.")
+            except ValueError:
+                print("Digite um número válido.")
+        
+        print(f"Cache configurado: {dias_expiracao} dias de expiração")
+        return usar_cache, dias_expiracao
+    
+    return usar_cache, 0
+
+# Exemplo de uso:
+if __name__ == "__main__":
+    print("=== MACRO AUTOMAÇÃO SOI ===")
+    
+    # 1. Carregar dados genéricos
+    print("\n1. Carregando dados genéricos...")
+    try:
+        generica = pd.read_excel("Macro Automação SOI", sheet_name="a")
+        print(f"   ✓ Dados genéricos carregados: {len(generica)} registros")
+    except Exception as e:
+        print(f"   ✗ Erro ao carregar dados genéricos: {e}")
+        exit()
+    
+    # 2. Usuário escolhe estados
+    estados_selecionados = escolher_estados()
+    
+    # 3. Usuário configura cache
+    usar_cache, dias_cache = escolher_configuracao_cache()
+    
+    # 4. Carregar dados do Science com as configurações escolhidas
+    print(f"\n4. Carregando dados do Science para os estados: {', '.join(estados_selecionados)}")
+    tempo_inicio = datetime.now()
+    
+    df_science = carregar_dados_science_com_cache(
+        estados_selecionados=estados_selecionados,
+        usar_cache=usar_cache,
+        cache_expira_dias=dias_cache
+    )
+    
+    tempo_fim = datetime.now()
+    tempo_decorrido = tempo_fim - tempo_inicio
+    print(f"   ⏱️ Tempo de carregamento: {tempo_decorrido.total_seconds():.2f} segundos")
+    
+    if df_science.empty:
+        print("   ✗ Erro: Nenhum dado do Science foi carregado!")
+        exit()
+    else:
+        print(f"   ✓ Dados do Science carregados: {len(df_science)} registros")
+    
+    # 5. Processar siglas
+    print("\n5. Processando siglas dos sites...")
+    df_final = processar_siglas_sites(generica, df_science)
+    
+    # 6. Salvar resultado
+    print("\n6. Salvando resultado...")
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    estados_str = "_".join(estados_selecionados)
+    nome_arquivo_saida = f"Macro_Automacao_SOI_{estados_str}_{timestamp}.xlsx"
+    
+    try:
+        df_final.to_excel(nome_arquivo_saida, index=False)
+        print(f"   ✓ Arquivo salvo como: {nome_arquivo_saida}")
+    except Exception as e:
+        print(f"   ✗ Erro ao salvar arquivo: {e}")
+    
+    # 7. Mostrar estatísticas
+    print("\n7. Estatísticas finais:")
+    if 'SIGLA_SITE' in df_final.columns:
+        print(f"   📊 Total de sites processados: {len(df_final)}")
+        print(f"   📊 Siglas únicas geradas: {len(df_final['SIGLA_SITE'].unique())}")
+        if 'UF' in df_final.columns:
+            print(f"   📊 Distribuição por estado:")
+            for uf in sorted(df_final['UF'].unique()):
+                count = len(df_final[df_final['UF'] == uf])
+                porcentagem = (count / len(df_final)) * 100
+                print(f"      {uf}: {count} sites ({porcentagem:.1f}%)")
+    
+    print(f"\n   ⏱️ Tempo total de processamento: {(datetime.now() - tempo_inicio).total_seconds():.2f} segundos")
+    print("\n=== ✅ PROCESSAMENTO CONCLUÍDO ===")
+    
+    # 8. Opções pós-processamento
+    print("\n=== OPÇÕES ADICIONAIS ===")
+    while True:
+        print("\nO que você gostaria de fazer?")
+        print("1 - Executar novamente com outros estados")
+        print("2 - Limpar cache")
+        print("3 - Ver informações do cache")
+        print("4 - Sair")
+        
+        opcao = input("\nDigite sua opção (1-4): ").strip()
+        
+        if opcao == '1':
+            # Executar novamente
+            estados_selecionados = escolher_estados()
+            usar_cache, dias_cache = escolher_configuracao_cache()
+            # ... repetir o processo
+            break
+        elif opcao == '2':
+            # Limpar cache
+            import shutil
+            cache_dir = "cache_science"
+            if os.path.exists(cache_dir):
+                shutil.rmtree(cache_dir)
+                print("✓ Cache limpo com sucesso!")
+            else:
+                print("ℹ️ Nenhum cache encontrado.")
+        elif opcao == '3':
+            # Ver informações do cache
+            cache_dir = "cache_science"
+            if os.path.exists(cache_dir):
+                print(f"\n📁 Arquivos de cache em '{cache_dir}':")
+                for arquivo in os.listdir(cache_dir):
+                    caminho = os.path.join(cache_dir, arquivo)
+                    tamanho = os.path.getsize(caminho) / 1024 / 1024  # MB
+                    data_mod = datetime.fromtimestamp(os.path.getmtime(caminho))
+                    print(f"   {arquivo}: {tamanho:.2f} MB (modificado: {data_mod.strftime('%d/%m/%Y %H:%M')})")
+            else:
+                print("ℹ️ Nenhum cache encontrado.")
+        elif opcao == '4':
+            break
+        else:
+            print("Opção inválida!")
