@@ -40,22 +40,19 @@ def limpar_pasta(caminho_pasta):
                 print(f"Erro ao remover {arquivo}: {e}")
 
 def renomear_arquivos_ericsson(pasta_destino, prefixo):
-    """Renomeia arquivos descompactados da Ericsson adicionando 'edb' no nome"""
+    """Renomeia arquivos descompactados da Ericsson adicionando 'edb' no início do nome"""
     if 'ERICSSON' not in prefixo:
         return
     
-    print(f"Renomeando arquivos da Ericsson para incluir 'edb'...")
+    print(f"Renomeando arquivos da Ericsson para incluir 'edb' no início...")
     arquivos_na_pasta = os.listdir(pasta_destino)
     
     for arquivo in arquivos_na_pasta:
         if os.path.isfile(os.path.join(pasta_destino, arquivo)):
-            # Separar nome e extensão
-            nome_sem_extensao, extensao = os.path.splitext(arquivo)
-            
-            # Verificar se 'edb' já não está no nome (para evitar duplicação)
-            if 'edb' not in nome_sem_extensao.lower():
-                # Adicionar 'edb' no final do nome antes da extensão
-                novo_nome = f"{nome_sem_extensao}_edb{extensao}"
+            # Verificar se 'edb' já não está no início do nome (para evitar duplicação)
+            if not arquivo.lower().startswith('edb'):
+                # Adicionar 'edb' no início do nome
+                novo_nome = f"edb{arquivo}"
                 
                 caminho_antigo = os.path.join(pasta_destino, arquivo)
                 caminho_novo = os.path.join(pasta_destino, novo_nome)
@@ -175,10 +172,6 @@ for prefix in prefixos:
         arquivos_na_pasta = os.listdir(pasta_tecnologia)
         print(f"{tecnologia}: {len(arquivos_na_pasta)} arquivo(s) na pasta")
         for arquivo in arquivos_na_pasta[:5]:  # Mostra apenas os primeiros 5 para não poluir
-            print(f"  - {arquivo}")
-        if len(arquivos_na_pasta) > 5:
-            print(f"  ... e mais {len(arquivos_na_pasta) - 5} arquivo(s)")
-print("="*50)
             print(f"  - {arquivo}")
         if len(arquivos_na_pasta) > 5:
             print(f"  ... e mais {len(arquivos_na_pasta) - 5} arquivo(s)")
