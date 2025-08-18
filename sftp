@@ -40,19 +40,22 @@ def limpar_pasta(caminho_pasta):
                 print(f"Erro ao remover {arquivo}: {e}")
 
 def renomear_arquivos_ericsson(pasta_destino, prefixo):
-    """Renomeia arquivos descompactados da Ericsson adicionando 'edb' no início do nome"""
+    """Renomeia arquivos descompactados da Ericsson adicionando 'edb' no nome"""
     if 'ERICSSON' not in prefixo:
         return
     
-    print(f"Renomeando arquivos da Ericsson para incluir 'edb' no início...")
+    print(f"Renomeando arquivos da Ericsson para incluir 'edb'...")
     arquivos_na_pasta = os.listdir(pasta_destino)
     
     for arquivo in arquivos_na_pasta:
         if os.path.isfile(os.path.join(pasta_destino, arquivo)):
-            # Verificar se 'edb' já não está no início do nome (para evitar duplicação)
-            if not arquivo.lower().startswith('edb'):
-                # Adicionar 'edb' no início do nome
-                novo_nome = f"edb{arquivo}"
+            # Separar nome e extensão
+            nome_sem_extensao, extensao = os.path.splitext(arquivo)
+            
+            # Verificar se 'edb' já não está no nome (para evitar duplicação)
+            if 'edb' not in nome_sem_extensao.lower():
+                # Adicionar 'edb' no final do nome antes da extensão
+                novo_nome = f"{nome_sem_extensao}_edb{extensao}"
                 
                 caminho_antigo = os.path.join(pasta_destino, arquivo)
                 caminho_novo = os.path.join(pasta_destino, novo_nome)
@@ -79,7 +82,7 @@ def descompactar_arquivo(arquivo_zip, pasta_destino, prefixo):
         print(f"Arquivo ZIP {arquivo_zip} removido após descompactação")
         
         # Se for Ericsson (4G ou 5G), renomear arquivos adicionando 'edb'
-        if 'ERICSSON' in prefixo and ('4G' in prefixo or '5G' in prefixo):
+        if prefixo in ['4G_RAW_ERICSSON', '5G_RAW_ERICSSON']:
             renomear_arquivos_ericsson(pasta_destino, prefixo)
         
         return True
