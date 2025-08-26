@@ -80,8 +80,8 @@ df_out = pd.read_excel(arquivo, sheet_name="Planilha1", usecols=["ID MASTER"])
 colunas = [
     "ID MASTER",
     "Sigla (Master)",
-    "Sigla Sugerida",
-    "Preencher com UFXXX",
+    "Sigla Sugerida 
+Preencher com UFXXX,
     "Nova Sigla do Site (SOI)",
     "Nome do Site (Master)",
     "Novo Nome do Site (SOI)",
