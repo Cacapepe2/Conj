@@ -1,0 +1,25 @@
+import pandas as pd
+from geopy.distance import geodesic
+
+# Exemplo de dois DataFrames
+df1 = pd.DataFrame({
+    "lat": [-23.55052, -22.9035],
+    "lon": [-46.633308, -43.2096]
+})
+
+df2 = pd.DataFrame({
+    "lat": [-23.5489, -22.9100],
+    "lon": [-46.6388, -43.2300]
+})
+
+# Calcula a distância linha a linha entre df1 e df2
+distancias_metros = [
+    geodesic((row1.lat, row1.lon), (row2.lat, row2.lon)).meters
+    for row1, row2 in zip(df1.itertuples(index=False), df2.itertuples(index=False))
+]
+
+# Agora 'distancias_metros' é uma lista com as distâncias calculadas
+print(distancias_metros)
+
+# Exemplo: armazenando numa variável (pode ser a soma, média ou só uma lista)
+distancias = distancias_metros
