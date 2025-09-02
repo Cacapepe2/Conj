@@ -119,3 +119,12 @@ if len(b_valid) > 0:
             detalhes.append(df_out.iloc[i]["Detalhe para Aquisição"])  # sem mudança
 
     df_out["Detalhe para Aquisição"] = detalhes
+
+
+
+from sklearn.metrics.pairwise import haversine_distances
+
+# Pegando o primeiro ponto de df_out
+coord_test = np.radians(df_out.iloc[0][["Latitude","Longitude"]].values.reshape(1, -1))
+distancias = haversine_distances(coord_test, coords_b) * RAIO_TERRA_M  # converte de rad -> metros
+print(distancias)
