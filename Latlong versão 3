@@ -1,0 +1,87 @@
+import pandas as pd
+import numpy as np
+from sklearn.neighbors import BallTree
+
+# --- Função para limpar e normalizar alturas ---
+def parse_alturas(valor):
+    """
+    Extrai valores numéricos de strings como:
+    '0.8 - 3.4', '32 a 38', '1-16.5; 21.9 = 23.4'
+    Retorna uma lista de floats.
+    """
+    if pd.isna(valor) or str(valor).strip() == "":
+        return []
+
+    # padronizar separadores
+    valor = (
+        str(valor)
+        .replace(",", ".")  # vírgula decimal -> ponto
+        .replace("−", "-")  # traço unicode -> hífen
+        .replace("–", "-")
+        .replace("—", "-")
+        .replace(";", "-")  # alguns usam ponto-e-vírgula
+        .replace("a", "-")  # alguns usam "a" para intervalo
+        .replace("=", "-")  # alguns usam "=" para intervalo
+    )
+
+    partes = []
+    for subparte in valor.split("-"):
+        subparte = subparte.strip()
+        try:
+            partes.append(float(subparte))
+        except ValueError:
+            continue
+    return partes
+
+# --- Carregar dados ---
+b_sharing = pd.read_excel("b_sharing.xlsx")
+
+# Normalizar coluna de alturas (corrigido para "altura Disponível")
+b_sharing["Alturas"] = b_sharing["altura Disponível"].apply(parse_alturas)
+
+# Manter apenas as linhas "Compartilhável = Sim"
+b_sharing = b_sharing[
+    b_sharing["Compartilhável"].astype(str).str.strip().str.lower() == "sim"
+]
+
+# Normalizar coordenadas (vírgula → ponto, garantir float)
+b_sharing["Latitude"] = (
+    b_sharing["Latitude"].astype(str).str.replace(",", ".").astype(float)
+)
+b_sharing["Longitude"] = (
+    b_sharing["Longitude"].astype(str).str.replace(",", ".").astype(float)
+)
+
+# Remover linhas sem coordenadas válidas
+b_sharing = b_sharing.dropna(subset=["Latitude", "Longitude"])
+
+# --- Construir BallTree ---
+coords = np.radians(b_sharing[["Latitude", "Longitude"]].to_numpy())
+tree = BallTree(coords, metric="haversine")
+
+# --- Função para encontrar colos possíveis ---
+def encontrar_colos(lat, lon, distancia_m=250):
+    coord = np.radians([[lat, lon]])
+    distancia_rad = distancia_m / 6371000.0  # converter metros -> radianos
+    indices = tree.query_radius(coord, r=distancia_rad)[0]
+
+    resultados = []
+    for i in indices:
+        linha = b_sharing.iloc[i]
+        alturas = ", ".join(map(str, linha["Alturas"])) if linha["Alturas"] else "N/A"
+        resultados.append(
+            f"É possível fazer colo com a {linha['Proprietário']} - "
+            f"ID Detentora {linha['ID Detentora']} "
+            f"(Alturas disponíveis: {alturas})"
+        )
+    return resultados
+
+# --- Exemplo de uso (ponto de teste no RJ) ---
+lat_exemplo, lon_exemplo = -22.9, -43.1  # Rio de Janeiro
+res = encontrar_colos(lat_exemplo, lon_exemplo, distancia_m=250)
+
+if res:
+    for r in res:
+        print(r)
+else:
+    print("Nenhum ponto encontrado a menos de 250m.")
