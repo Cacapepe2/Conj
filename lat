@@ -134,3 +134,22 @@ print(df_out.iloc[0]["Longitude"])
 print("\nPrimeiras linhas das colunas:")
 print(df_out[["Latitude", "Longitude"]].head())
 print(df_out[["Latitude", "Longitude"]].dtypes)
+
+
+Tipo dos dados:
+<class 'numpy.float64'>
+<class 'numpy.float64'>
+
+Valores:
+-20.34305
+-40.38511
+
+Primeiras linhas das colunas:
+    Latitude  Longitude
+0 -20.343050 -40.385110
+1 -21.627867 -41.618165
+2        NaN        NaN
+3 -22.988020 -43.194910
+Latitude     float64
+Longitude    float64
+dtype: object
