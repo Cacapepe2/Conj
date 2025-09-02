@@ -1,0 +1,290 @@
+import pandas as pd
+import unidecode
+import numpy as np
+from sklearn.neighbors import BallTree
+caminhos = [
+    r"C:\Users\40417524\Telefonica\Engenharia de RF LESTE (RJ ES BA SE) - Iniciativa Automação\Science\Base_dados\Science_2G.xlsx",
+    r"C:\Users\40417524\Telefonica\Engenharia de RF LESTE (RJ ES BA SE) - Iniciativa Automação\Science\Base_dados\Science_3G.xlsx",
+    r"C:\Users\40417524\Telefonica\Engenharia de RF LESTE (RJ ES BA SE) - Iniciativa Automação\Science\Base_dados\Science_4G.xlsx",
+    r"C:\Users\40417524\Telefonica\Engenharia de RF LESTE (RJ ES BA SE) - Iniciativa Automação\Science\Base_dados\Science_5G.xlsx",
+    r"C:\Users\40417524\Telefonica\Engenharia de RF LESTE (RJ ES BA SE) - Iniciativa Automação\Science\Base_dados\Science_IoT.xlsx"
+]
+
+# Lê e junta todos
+df_total = pd.concat([
+    pd.read_excel(caminho, usecols=["SIG_SITE", "SIG_ERB", "NUM_LATITUDE_DECIMAL","NUM_LONGITUDE_DECIMAL","SIG_ESTADO"])
+    for caminho in caminhos
+], ignore_index=True)
+
+#pega a Master
+arquivo = r"C:\Users\40417524\Telefonica\Engenharia de RF LESTE (RJ ES BA SE) - MASTER\MASTER.xlsx"
+ufs_desejadas = {"RJ", "ES", "MG"} #Escolha aqui quais regionais utilizará
+
+categorias_master = {'Novo','Móvel','Remanejamento'}
+priori = {"Overbooking","Orçamento"}
+df = pd.read_excel(
+arquivo,
+    sheet_name="Master SN",
+    skiprows=2, # começa da 3ª linha
+    usecols=["UF", "UFSigla","ID Master","Sigla","Latitude","Longitude","Cobertura","Setor","Altura (Metros)","Nome do Site","Observações","Categoria","Priorização SN","FINAL Tecnologia Final","Remanejamento Site Origem","FINAL Frequencia 4G","FINAL MIMO 4G"] # só pega colunas que interessam
+)
+
+df = df[df["UF"].isin(ufs_desejadas)]
+df = df[df["Priorização SN"].isin(priori)]
+df = df[df["Categoria"].isin(categorias_master)]
+#print(df.shape) # mostra quantas linhas sobraram
+#print(df.head())
+
+#Pega a da Sharing
+b_sharing = pd.read_excel("BASE_SHARING_FLY_JUL 2025 v2 2.xlsx",
+                          usecols= ["UF", "ID Detentora","Latitude", "Longitude","Altitude", "altura Disponível","Proprietário","Compartilhável"])
+
+b_sharing = b_sharing[b_sharing["UF"].isin(ufs_desejadas)]#troque o nome aqui
+#print(b_sharing.shape) # mostra quantas linhas sobraram
+#print(b_sharing.head())
+# -------------------- FUNÇÃO PARA CALCULAR ANTENAS --------------------
+def calcular_antenas(row):
+    Setor = row["Setor"]
+    tecnologias = str(row["FINAL Tecnologia Final"]).split('|')
+    
+    num_antenas = Setor
+    if "5G" in tecnologias:
+        if set(tecnologias) == {"5G"}:
+            return Setor
+        else:
+            return Setor *2
+    else:
+        return Setor
+
+# Regras do dicionário
+rru_rules = {
+    3: {
+        "700": (3, 3),
+        "1800/2100": (2, 3),
+        "1800/2100/2600": (2, 3),
+        "2600": (2, 3),
+    },
+    2: {
+        "700": (2, 2),
+        "1800/2100": (1, 2),
+        "1800/2100/2600": (1, 2),
+        "2600": (1, 2),
+    },
+    1: {
+        "700": (1, 1),
+        "1800/2100": (1, 1),
+        "1800/2100/2600": (1, 1),
+        "2600": (1, 1),
+    }
+}
+
+def calcular_rrus(row):
+    # valida setores
+    try:
+        setores = int(row.get("Setor"))
+    except Exception:
+        return 0
+
+    rules = rru_rules.get(setores)
+    if not rules:
+        return 0
+
+    # tratar valores vazios
+    if pd.isna(row.get("FINAL Frequencia 4G")) or str(row.get("FINAL Frequencia 4G")).strip() == "":
+        return 0
+
+    freq_str = str(row.get("FINAL Frequencia 4G"))
+    mimo_str = "" if pd.isna(row.get("FINAL MIMO 4G")) else str(row.get("FINAL MIMO 4G"))
+
+    # tokens normalizados
+    freq_tokens = set(t.strip() for t in freq_str.split("/") if t and t.strip().lower() != "nan")
+    mimo_tokens = set(t.strip() for t in mimo_str.split("/") if t and t.strip().lower() != "nan")
+
+    # prepara regras como (set_tokens, rru_sem, rru_com) e ordena por tamanho decrescente
+    rule_items = []
+    for key, (rru_sem, rru_com) in rules.items():
+        tokens = set(t.strip() for t in str(key).split("/") if t)
+        rule_items.append((tokens, rru_sem, rru_com))
+    rule_items.sort(key=lambda x: -len(x[0]))  # combinações maiores primeiro
+
+    total = 0
+    # aplica regras greedy
+    for token_set, rru_sem, rru_com in rule_items:
+        if token_set and token_set.issubset(freq_tokens):
+            # usa valor com MIMO só se todos os tokens da regra estiverem no MIMO
+            if token_set.issubset(mimo_tokens):
+                total += rru_com
+            else:
+                total += rru_sem
+            # evita dupla contagem
+            freq_tokens -= token_set
+
+    # opcional: tentar casar quaisquer tokens restantes com regras de 1 token
+    if freq_tokens:
+        for freq in list(freq_tokens):
+            for token_set, rru_sem, rru_com in rule_items:
+                if len(token_set) == 1 and freq in token_set:
+                    if token_set.issubset(mimo_tokens):
+                        total += rru_com
+                    else:
+                        total += rru_sem
+                    freq_tokens.remove(freq)
+                    break
+            # se não casar, o código ignora (você pode logar/avisar se quiser)
+
+    return total
+
+
+    
+# -------------------- FUNÇÃO PARA GERAR SIGLA --------------------
+def gerar_sigla_sugerida(municipio, site, uf, usados, df_total):
+    stopwords = {"DE", "DO", "DA", "DOS", "DAS", "E"}
+
+    # Normaliza e quebra palavras
+    def limpar(palavra):
+        return unidecode.unidecode(palavra.strip().upper())
+
+    municipio_parts = [limpar(w) for w in municipio.split() if limpar(w) not in stopwords]
+    site_parts = [limpar(w) for w in site.split() if limpar(w) not in stopwords]
+
+    if not municipio_parts or not site_parts:
+        return None
+
+    m = municipio_parts[-1]  # última palavra do município
+    candidates = []
+
+    # Regra 1
+    if len(site_parts) >= 3:
+        candidates.append(site_parts[0][0] + site_parts[1][0] + site_parts[2][0])
+    elif len(site_parts) == 2:
+        candidates.append(m[0] + site_parts[0][0] + site_parts[1][0])
+    else:  # 1 palavra
+        if len(site_parts[0]) >= 2:
+            candidates.append(m[0] + site_parts[0][0] + site_parts[0][1])
+
+    # Regra 2
+    if len(site_parts) >= 2:
+        candidates.append(site_parts[0][:2] + site_parts[1][0])
+    else:
+        if len(site_parts[0]) >= 3:
+            candidates.append(site_parts[0][:3])
+
+    # Regra 3
+    if len(site_parts[0]) >= 2:
+        candidates.append(m[0] + site_parts[0][0] + site_parts[0][1])
+
+    # Regra 4
+    if len(m) >= 2:
+        candidates.append(m[0] + m[1] + site_parts[0][0])
+
+    # Regra 5
+    if len(site_parts) >= 2:
+        candidates.append(m[0] + site_parts[0][0] + site_parts[1][0])
+
+    # Regra 6
+    if len(site_parts) >= 2 and len(site_parts[0]) >= 2:
+        candidates.append(m[0] + site_parts[0][1] + site_parts[1][0])
+
+    # Regra 7: varredura monotônica
+    bloco = m + "".join(site_parts)
+    for i in range(len(bloco)):
+        for j in range(i + 1, len(bloco)):
+            for k in range(j + 1, len(bloco)):
+                candidates.append(bloco[i] + bloco[j] + bloco[k])
+
+    # Normaliza todos os candidatos
+    candidates = [c.upper() for c in candidates if len(c) == 3]
+
+    # Checa unicidade contra df_total e já usados
+    usados_uf = set(df_total.loc[df_total["SIG_ESTADO"] == uf, "SIG_SITE"].unique())
+    for cand in candidates:
+        if cand not in usados[uf] and cand not in usados_uf:
+            usados[uf].add(cand)
+            return cand
+
+    return None
+
+
+# -------------------- PIPELINE PRINCIPAL --------------------
+
+
+arquivo = "Book 4.xlsx" #Se necessário, mexer aqui
+df_out = pd.read_excel(arquivo, sheet_name="Planilha1", usecols=["ID Master"])
+
+
+colunas = [
+    "ID Master",
+    "Sigla (Master)",
+    "Sigla Sugerida",
+    "Nova Sigla do Site (SOI)",
+    "Nome do Site (Master)",
+    "Novo Nome do Site (SOI)",
+    "B2B",
+    "Criticidade",
+    "Utilização",
+    "Detalhe para Aquisição",
+    "Operação",
+    "Tipologia",
+    "Co-Site",
+    "Origem",
+    "Altura (metros)",
+    "Número de RRU",
+    "Número de Antenas",
+    "Processado pela Automação?"
+]
+
+for col in colunas:
+    if col not in df_out.columns:
+        df_out[col] = ""
+
+# Preenche fixos
+df_out["B2B"] = "Não"
+df_out["Criticidade"] = "Alta"
+df_out["Utilização"] = "Equipamento"
+df_out["Operação"] = "Móvel"
+df_out["Co-Site"] = "Não"
+df_out["Origem"] = "Móvel"
+
+
+# Merge com df (já traz Sigla, Nome do Site, Cobertura e Setor)
+df_out = df_out.merge(df,
+    on="ID Master",
+    how="left"
+)
+
+# Colunas do site
+df_out['UF'] = df_out['ID Master'].str[:2]
+df_out["Sigla (Master)"] = df_out["Sigla"]
+df_out["Nome do Site (Master)"] = df_out["Nome do Site"]
+df_out["Novo Nome do Site (SOI)"] = df_out["Nome do Site (Master)"].str.upper()
+df_out["Altura (metros)"] = df_out["Altura (Metros)"]
+df_out["Detalhe para Aquisição"] = df_out["Observações"]
+#Trata o remanejamento
+mask_rem = df_out["Categoria"].astype(str).str.strip().eq("Remanejamento")
+origem = df_out.get("Remanejamento Site Origem", pd.Series(index=df_out.index))
+origem = origem.fillna("").astype(str).str.strip()
+texto_extra = "Este site possui remanejamento do " + origem
+df_out.loc[mask_rem, "Detalhe para Aquisição"] = (
+    df_out.loc[mask_rem, "Detalhe para Aquisição"]
+    .str.cat(texto_extra[mask_rem], sep=" | ", na_rep="")
+    .str.strip(" |") 
+)
+
+# Tipologia (mapeamento da coluna Cobertura)
+mapeamento_tipologia = {
+    "Outdoor": "Outdoor",
+    "SmallCell": "Micro Cell",
+    "Indoor": "Indoor",
+    "Móvel": "Outdoor",
+    "Indoor/Outdoor": "Indoor/Outdoor",
+    "LampSite": "Indoor",
+    "PicoCell": "Micro Cell"
+}
+df_out["Tipologia"] = df_out["Cobertura"].map(mapeamento_tipologia)
+df_out["Número de Antenas"] = df_out.apply(calcular_antenas, axis = 1)
+df_out["Número de RRU"] = df_out.apply(calcular_rrus, axis=1)
+df_out = df_out.drop(columns=["FINAL Frequencia 4G", "FINAL MIMO 4G", "FINAL Tecnologia Final", "Remanejamento Site Origem","Observações"])
+
+
+
+df_out.to_excel("Planilha_intermediaria.xlsx", index=False, float_format="%.10f")
