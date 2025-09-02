@@ -1,0 +1,69 @@
+import pandas as pd
+import numpy as np
+from sklearn.neighbors import BallTree
+
+# -----------------------------
+# Configuração da distância limite
+# -----------------------------
+distancia_limite_metros = 250  # pode mudar facilmente
+raio_terra_metros = 6371000  # raio médio da Terra em metros
+distancia_limite = distancia_limite_metros / raio_terra_metros  # em radianos
+
+# -----------------------------
+# Pré-processamento b_sharing
+# -----------------------------
+# Exemplo de coluna "altura Disponivel" no formato "22 a 26"
+b_sharing[["Altura_min", "Altura_max"]] = b_sharing["altura Disponivel"].str.split(" a ", expand=True)
+b_sharing["Altura_min"] = b_sharing["Altura_min"].astype(float)
+b_sharing["Altura_max"] = b_sharing["Altura_max"].astype(float)
+
+# Converte coordenadas para float (já estão em ponto, só garantir)
+b_sharing["Latitude"] = b_sharing["Latitude"].astype(float)
+b_sharing["Longitude"] = b_sharing["Longitude"].astype(float)
+
+# Converte para radianos (necessário para haversine do BallTree)
+coords_b = np.radians(b_sharing[["Latitude", "Longitude"]].to_numpy())
+
+# -----------------------------
+# Pré-processamento df_out
+# -----------------------------
+# Troca vírgula por ponto e converte para float
+df_out["Latitude"] = df_out["Latitude"].astype(str).str.replace(",", ".").astype(float)
+df_out["Longitude"] = df_out["Longitude"].astype(str).str.replace(",", ".").astype(float)
+
+# Converte para radianos
+coords_out = np.radians(df_out[["Latitude", "Longitude"]].to_numpy())
+
+# -----------------------------
+# Construção do BallTree
+# -----------------------------
+tree = BallTree(coords_b, metric="haversine")
+
+# -----------------------------
+# Busca de vizinhos dentro do raio
+# -----------------------------
+detalhes = []
+
+for i, (coord, altura_out) in enumerate(zip(coords_out, df_out["Altura(metros)"])):
+    # Encontra todos os índices dentro do raio limite
+    indices = tree.query_radius([coord], r=distancia_limite)[0]
+
+    ids_validos = []
+    for idx in indices:
+        altura_min = b_sharing.iloc[idx]["Altura_min"]
+        altura_max = b_sharing.iloc[idx]["Altura_max"]
+
+        # Verifica se altura_out está dentro do intervalo
+        if altura_min <= altura_out <= altura_max:
+            ids_validos.append(str(b_sharing.iloc[idx]["ID Detentora"]))
+
+    # Monta o texto para a coluna
+    if len(ids_validos) == 1:
+        detalhes.append(f"É possível fazer colo com o {ids_validos[0]}")
+    elif len(ids_validos) > 1:
+        detalhes.append(f"É possível fazer colo com as {', '.join(ids_validos)}")
+    else:
+        detalhes.append(df_out.iloc[i]["Detalhe para Aquisição"])  # mantém valor original
+
+# Atualiza a coluna
+df_out["Detalhe para Aquisição"] = detalhes
