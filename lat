@@ -2,96 +2,120 @@ import pandas as pd
 import numpy as np
 from sklearn.neighbors import BallTree
 
-# -----------------------------
-# Configuração da distância limite
-# -----------------------------
-distancia_limite_metros = 250  # pode mudar facilmente
-raio_terra_metros = 6371000  # raio médio da Terra em metros
-distancia_limite = distancia_limite_metros / raio_terra_metros  # em radianos
+DISTANCIA_LIMITE_METROS = 250
+RAIO_TERRA_M = 6_371_000
+DISTANCIA_LIMITE_RAD = DISTANCIA_LIMITE_METROS / RAIO_TERRA_M  # haversine usa radianos
 
-# -----------------------------
-# Pré-processamento b_sharing
-# -----------------------------
-----------------------------------------------------------------------------------------------------------------------------------------
-# Função para extrair intervalos de altura
-# -----------------------------
+# =============== Helpers ===============
+def normalize_coord(x):
+    """Normaliza coordenadas em string -> float (com 'coerce').
+    Troca vírgula por ponto, normaliza traços Unicode, remove espaços.
+    """
+    s = str(x).strip()
+    s = s.replace(",", ".")
+    s = s.replace("−", "-").replace("–", "-").replace("—", "-")
+    s = s.replace(" ", "")
+    return s
+
+def clip_invalid_latlon(df, lat_col="Latitude", lon_col="Longitude"):
+    """Define como NaN valores fora do range geográfico válido."""
+    df.loc[~df[lat_col].between(-90, 90), lat_col] = np.nan
+    df.loc[~df[lon_col].between(-180, 180), lon_col] = np.nan
+
+_intervalo_regex = re.compile(r'(\d+\.?\d*)\s*[-a=]\s*(\d+\.?\d*)')
 def extrair_intervalos(texto):
+    """Extrai TODOS os intervalos 'n - m', 'n a m', 'n = m' de uma célula."""
     if pd.isna(texto):
         return []
-    
-    texto = str(texto).replace(",", ".")  # garante ponto decimal
-    intervalos = []
-    
-    # Regex captura: "0.8 - 3.4", "32 a 38", "21.9 = 23.4", etc.
-    matches = re.findall(r'(\d+\.?\d*)\s*[-a=]\s*(\d+\.?\d*)', texto)
-    
-    for m in matches:
+    t = str(texto).replace(",", ".")
+    out = []
+    for a, b in _intervalo_regex.findall(t):
         try:
-            minimo = float(m[0])
-            maximo = float(m[1])
-            if minimo > maximo:  # corrige se vier invertido
-                minimo, maximo = maximo, minimo
-            intervalos.append((minimo, maximo))
+            lo, hi = float(a), float(b)
+            if lo > hi:
+                lo, hi = hi, lo
+            out.append((lo, hi))
         except:
-            continue
-    
-    return intervalos
+            pass
+    return out
 
+def altura_dentro_de_quais_intervalos(altura, intervalos):
+    """True se altura estiver em pelo menos um intervalo."""
+    if pd.isna(altura) or not intervalos:
+        return False
+    return any(lo <= altura <= hi for lo, hi in intervalos)
 
-# Converte coordenadas para float
-b_sharing["Latitude"] = b_sharing["Latitude"].astype(str).str.replace(",", ".").astype(float)
-b_sharing["Longitude"] = b_sharing["Longitude"].astype(str).str.replace(",", ".").astype(float)
+# =============== Limpeza b_sharing ===============
+# Garante colunas
+for col in ["Latitude", "Longitude", "ID Detentora", "altura Disponivel"]:
+    if col not in b_sharing.columns:
+        raise ValueError(f"Coluna obrigatória ausente em b_sharing: {col}")
 
-# Cria coluna "Intervalos" a partir da altura Disponivel
+# Coordenadas -> float com 'coerce'
+b_sharing = b_sharing.copy()
+b_sharing["Latitude"]  = pd.to_numeric(b_sharing["Latitude"].map(normalize_coord), errors="coerce")
+b_sharing["Longitude"] = pd.to_numeric(b_sharing["Longitude"].map(normalize_coord), errors="coerce")
+clip_invalid_latlon(b_sharing, "Latitude", "Longitude")
+
+# Intervalos de altura (suporta '0.8 - 3.4', '32 a 38', '1-16.5; 21.9 = 23.4', etc.)
 b_sharing["Intervalos"] = b_sharing["altura Disponivel"].apply(extrair_intervalos)
 
-# Converte para radianos (necessário para BallTree com haversine)
-coords_b = np.radians(b_sharing[["Latitude", "Longitude"]].to_numpy())
+# Mantém somente linhas com coordenadas válidas p/ construir a árvore
+b_valid = b_sharing.dropna(subset=["Latitude", "Longitude"]).reset_index(drop=True)
+coords_b = np.radians(b_valid[["Latitude", "Longitude"]].to_numpy())
 
+# Se não houver pontos válidos, não dá para montar a árvore
+if len(b_valid) == 0:
+    # Nada a fazer; apenas não altere df_out
+    # (Você pode decidir aqui marcar um aviso/log)
+    pass
+else:
+    tree = BallTree(coords_b, metric="haversine")
 
----------------------------------------------------------------------------------------------------------------------------------------
+# =============== Limpeza df_out ===============
+for col in ["Latitude", "Longitude", "Altura(metros)", "Detalhe para Aquisição"]:
+    if col not in df_out.columns:
+        raise ValueError(f"Coluna obrigatória ausente em df_out: {col}")
 
+df_out = df_out.copy()
 
-# -----------------------------
-# Pré-processamento df_out
-# -----------------------------
-# Troca vírgula por ponto e converte para float
-df_out["Latitude"] = df_out["Latitude"].astype(str).str.replace(",", ".").astype(float)
-df_out["Longitude"] = df_out["Longitude"].astype(str).str.replace(",", ".").astype(float)
+# Coordenadas -> float com 'coerce'
+df_out["Latitude"]  = pd.to_numeric(df_out["Latitude"].map(normalize_coord), errors="coerce")
+df_out["Longitude"] = pd.to_numeric(df_out["Longitude"].map(normalize_coord), errors="coerce")
+clip_invalid_latlon(df_out, "Latitude", "Longitude")
 
-# Converte para radianos
-coords_out = np.radians(df_out[["Latitude", "Longitude"]].to_numpy())
+# Altura -> float (se vier suja por algum motivo)
+df_out["Altura(metros)"] = pd.to_numeric(df_out["Altura(metros)"], errors="coerce")
 
-# -----------------------------
-# Construção do BallTree
-# -----------------------------
-tree = BallTree(coords_b, metric="haversine")
+# Garante coluna de detalhes (preenche vazios com "")
+df_out["Detalhe para Aquisição"] = df_out["Detalhe para Aquisição"].fillna("")
 
-# -----------------------------
-# Busca de vizinhos dentro do raio
-# -----------------------------
-detalhes = []
+# =============== Matching espacial + altura ===============
+if len(b_valid) > 0:
+    coords_out = np.radians(df_out[["Latitude", "Longitude"]].to_numpy())
+    detalhes = []
 
-for i, (coord, altura_out) in enumerate(zip(coords_out, df_out["Altura(metros)"])):
-    # Encontra todos os índices dentro do raio limite
-    indices = tree.query_radius([coord], r=distancia_limite)[0]
+    for i, (coord, altura_out) in enumerate(zip(coords_out, df_out["Altura(metros)"].to_numpy())):
+        # Se coord tem NaN, não consulta a árvore (evita o erro)
+        if np.isnan(coord).any():
+            detalhes.append(df_out.iloc[i]["Detalhe para Aquisição"])  # mantém original
+            continue
 
-    ids_validos = []
-    for idx in indices:
-        altura_min = b_sharing.iloc[idx]["Altura_min"]
-        altura_max = b_sharing.iloc[idx]["Altura_max"]
+        # Consulta vizinhos dentro do raio
+        vizinhos_idx = tree.query_radius([coord], r=DISTANCIA_LIMITE_RAD)[0]
 
-        # Verifica se altura_out está dentro do intervalo
-        if altura_min <= altura_out <= altura_max:
-            ids_validos.append(str(b_sharing.iloc[idx]["ID Detentora"]))
+        ids_validos = []
+        for j in vizinhos_idx:
+            intervalos = b_valid.iloc[j]["Intervalos"]
+            if altura_dentro_de_quais_intervalos(altura_out, intervalos):
+                ids_validos.append(str(b_valid.iloc[j]["ID Detentora"]))
 
-    # Monta o texto para a coluna
-    if len(ids_validos) == 1:
-        detalhes.append(f"É possível fazer colo com o {ids_validos[0]}")
-    elif len(ids_validos) > 1:
-        detalhes.append(f"É possível fazer colo com as {', '.join(ids_validos)}")
-    else:
-        detalhes.append(df_out.iloc[i]["Detalhe para Aquisição"])  # mantém valor original
+        ids_validos = sorted(set(ids_validos))
+        if len(ids_validos) == 1:
+            detalhes.append(f"É possível fazer colo com o {ids_validos[0]}")
+        elif len(ids_validos) > 1:
+            detalhes.append(f"É possível fazer colo com as {', '.join(ids_validos)}")
+        else:
+            detalhes.append(df_out.iloc[i]["Detalhe para Aquisição"])  # sem mudança
 
-# Atualiza a coluna
-df_out["Detalhe para Aquisição"] = detalhes
+    df_out["Detalhe para Aquisição"] = detalhes
