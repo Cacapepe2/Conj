@@ -128,3 +128,9 @@ from sklearn.metrics.pairwise import haversine_distances
 coord_test = np.radians(df_out.iloc[0][["Latitude","Longitude"]].values.reshape(1, -1))
 distancias = haversine_distances(coord_test, coords_b) * RAIO_TERRA_M  # converte de rad -> metros
 print(distancias)
+---------------------
+-> 140 coord_test = np.radians(df_out.iloc[0][["Latitude","Longitude"]].values.reshape(1, -1))
+    141 distancias = haversine_distances(coord_test, coords_b) * RAIO_TERRA_M  # converte de rad -> metros
+    142 print(distancias)
+
+TypeError: loop of ufunc does not support argument 0 of type numpy.float64 which has no callable radians method
