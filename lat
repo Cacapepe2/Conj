@@ -12,17 +12,45 @@ distancia_limite = distancia_limite_metros / raio_terra_metros  # em radianos
 # -----------------------------
 # Pré-processamento b_sharing
 # -----------------------------
-# Exemplo de coluna "altura Disponivel" no formato "22 a 26"
-b_sharing[["Altura_min", "Altura_max"]] = b_sharing["altura Disponivel"].str.split(" a ", expand=True)
-b_sharing["Altura_min"] = b_sharing["Altura_min"].astype(float)
-b_sharing["Altura_max"] = b_sharing["Altura_max"].astype(float)
+----------------------------------------------------------------------------------------------------------------------------------------
+# Função para extrair intervalos de altura
+# -----------------------------
+def extrair_intervalos(texto):
+    if pd.isna(texto):
+        return []
+    
+    texto = str(texto).replace(",", ".")  # garante ponto decimal
+    intervalos = []
+    
+    # Regex captura: "0.8 - 3.4", "32 a 38", "21.9 = 23.4", etc.
+    matches = re.findall(r'(\d+\.?\d*)\s*[-a=]\s*(\d+\.?\d*)', texto)
+    
+    for m in matches:
+        try:
+            minimo = float(m[0])
+            maximo = float(m[1])
+            if minimo > maximo:  # corrige se vier invertido
+                minimo, maximo = maximo, minimo
+            intervalos.append((minimo, maximo))
+        except:
+            continue
+    
+    return intervalos
 
-# Converte coordenadas para float (já estão em ponto, só garantir)
-b_sharing["Latitude"] = b_sharing["Latitude"].astype(float)
-b_sharing["Longitude"] = b_sharing["Longitude"].astype(float)
 
-# Converte para radianos (necessário para haversine do BallTree)
+# Converte coordenadas para float
+b_sharing["Latitude"] = b_sharing["Latitude"].astype(str).str.replace(",", ".").astype(float)
+b_sharing["Longitude"] = b_sharing["Longitude"].astype(str).str.replace(",", ".").astype(float)
+
+# Cria coluna "Intervalos" a partir da altura Disponivel
+b_sharing["Intervalos"] = b_sharing["altura Disponivel"].apply(extrair_intervalos)
+
+# Converte para radianos (necessário para BallTree com haversine)
 coords_b = np.radians(b_sharing[["Latitude", "Longitude"]].to_numpy())
+
+
+---------------------------------------------------------------------------------------------------------------------------------------
+
 
 # -----------------------------
 # Pré-processamento df_out
