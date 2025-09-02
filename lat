@@ -124,13 +124,10 @@ if len(b_valid) > 0:
 
 from sklearn.metrics.pairwise import haversine_distances
 
-# Pegando o primeiro ponto de df_out
-coord_test = np.radians(df_out.iloc[0][["Latitude","Longitude"]].values.reshape(1, -1))
-distancias = haversine_distances(coord_test, coords_b) * RAIO_TERRA_M  # converte de rad -> metros
-print(distancias)
----------------------
--> 140 coord_test = np.radians(df_out.iloc[0][["Latitude","Longitude"]].values.reshape(1, -1))
-    141 distancias = haversine_distances(coord_test, coords_b) * RAIO_TERRA_M  # converte de rad -> metros
-    142 print(distancias)
+# Primeiro ponto de df_out
+coord_raw = df_out.iloc[0][["Latitude","Longitude"]].to_numpy().reshape(1, -1)  # garante array 2D
+coord_test = np.radians(coord_raw)  # agora funciona
 
-TypeError: loop of ufunc does not support argument 0 of type numpy.float64 which has no callable radians method
+# Distâncias para todos os pontos de b_valid
+distancias = haversine_distances(coord_test, coords_b) * RAIO_TERRA_M  # em metros
+print(distancias)
