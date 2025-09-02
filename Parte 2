@@ -1,0 +1,173 @@
+import re
+from sklearn.metrics.pairwise import haversine_distances
+arquivo_int = "Planilha_intermediaria.xlsx"
+df_out = pd.read_excel(arquivo_int)
+df_out = df_out.dropna(subset= ["Latitude", "Longitude"])
+
+# Geração da Sigla Sugerida
+usados = {uf: set() for uf in df_total["SIG_ESTADO"].unique()}
+
+for i, row in df_out.iterrows():
+    uf = row["ID Master"][:2]  # duas primeiras letras = UF
+    if pd.notna(row["Novo Nome do Site (SOI)"]):
+        partes = row["Novo Nome do Site (SOI)"].split("-")
+        if len(partes) == 2:
+            municipio, site = partes[0].strip(), partes[1].strip()
+            sigla = gerar_sigla_sugerida(municipio, site, uf, usados, df_total)
+            df_out.at[i, "Nova Sigla do Site (SOI)"] = sigla if sigla else ""
+df_out["Sigla Sugerida"] = df_out['UF'] + df_out["Nova Sigla do Site (SOI)"] 
+b_sharing = b_sharing[b_sharing["Compartilhável"] == "SIM"]
+# Limpa colunas auxiliares
+# -----------------------------
+DISTANCIA_LIMITE_METROS = 350
+RAIO_TERRA_M = 6_371_000
+DISTANCIA_LIMITE_RAD = DISTANCIA_LIMITE_METROS / RAIO_TERRA_M  # haversine usa radianos
+
+# =============== Helpers ===============
+def normalize_coord(x):
+    """Normaliza coordenadas em string -> float (com 'coerce').
+    Troca vírgula por ponto, normaliza traços Unicode, remove espaços.
+    """
+    s = str(x).strip()
+    s = s.replace(",", ".")
+    s = s.replace("−", "-").replace("–", "-").replace("—", "-")
+    s = s.replace(" ", "")
+    return s
+
+def clip_invalid_latlon(df, lat_col="Latitude", lon_col="Longitude"):
+    """Define como NaN valores fora do range geográfico válido."""
+    df.loc[~df[lat_col].between(-90, 90), lat_col] = np.nan
+    df.loc[~df[lon_col].between(-180, 180), lon_col] = np.nan
+
+_intervalo_regex = re.compile(r'(\d+\.?\d*)\s*[-a=]\s*(\d+\.?\d*)')
+def extrair_intervalos(texto):
+    """Extrai TODOS os intervalos 'n - m', 'n a m', 'n = m' de uma célula."""
+    if pd.isna(texto):
+        return []
+    t = str(texto).replace(",", ".")
+    out = []
+    for a, b in _intervalo_regex.findall(t):
+        try:
+            lo, hi = float(a), float(b)
+            if lo > hi:
+                lo, hi = hi, lo
+            out.append((lo, hi))
+        except:
+            pass
+    return out
+
+def altura_dentro_de_quais_intervalos(altura, intervalos):
+    """True se altura estiver em pelo menos um intervalo."""
+    if pd.isna(altura) or not intervalos:
+        return False
+    return any(lo <= altura <= hi for lo, hi in intervalos)
+
+# =============== Limpeza b_sharing ===============
+# Garante colunas
+for col in ["Latitude", "Longitude", "ID Detentora", "altura Disponível"]:
+    if col not in b_sharing.columns:
+        raise ValueError(f"Coluna obrigatória ausente em b_sharing: {col}")
+
+# Coordenadas -> float com 'coerce'
+b_sharing = b_sharing.copy()
+b_sharing["Latitude"]  = pd.to_numeric(b_sharing["Latitude"].map(normalize_coord), errors="coerce")
+b_sharing["Longitude"] = pd.to_numeric(b_sharing["Longitude"].map(normalize_coord), errors="coerce")
+b_sharing["Latitude"] = pd.to_numeric(b_sharing["Latitude"],errors= "coerce")
+b_sharing["Longitude"] = pd.to_numeric(b_sharing["Longitude"],errors= "coerce")
+b_sharing = b_sharing.dropna(subset= ["Latitude", "Longitude"])
+
+clip_invalid_latlon(b_sharing, "Latitude", "Longitude")
+
+# Intervalos de altura (suporta '0.8 - 3.4', '32 a 38', '1-16.5; 21.9 = 23.4', etc.)
+b_sharing["Intervalos"] = b_sharing["altura Disponível"].apply(extrair_intervalos)
+
+# Mantém somente linhas com coordenadas válidas p/ construir a árvore
+b_valid = b_sharing.dropna(subset=["Latitude", "Longitude"]).reset_index(drop=True)
+coords_b = np.radians(b_valid[["Latitude", "Longitude"]].to_numpy())
+
+# Se não houver pontos válidos, não dá para montar a árvore
+if len(b_valid) == 0:
+    # Nada a fazer; apenas não altere df_out
+    # (Você pode decidir aqui marcar um aviso/log)
+    pass
+else:
+    tree = BallTree(coords_b, metric="haversine")
+
+# =============== Limpeza df_out ===============
+for col in ["Latitude", "Longitude", "Altura (metros)", "Detalhe para Aquisição"]:
+    if col not in df_out.columns:
+        raise ValueError(f"Coluna obrigatória ausente em df_out: {col}")
+
+df_out = df_out.copy()
+
+# Coordenadas -> float com 'coerce'
+df_out["Latitude"]  = pd.to_numeric(df_out["Latitude"].map(normalize_coord), errors="coerce")
+df_out["Longitude"] = pd.to_numeric(df_out["Longitude"].map(normalize_coord), errors="coerce")
+clip_invalid_latlon(df_out, "Latitude", "Longitude")
+
+# Altura -> float (se vier suja por algum motivo)
+df_out["Altura (metros)"] = pd.to_numeric(df_out["Altura (metros)"], errors="coerce")
+
+# Garante coluna de detalhes (preenche vazios com "")
+df_out["Detalhe para Aquisição"] = df_out["Detalhe para Aquisição"].fillna("")
+
+# =============== Matching espacial + altura ===============
+if len(b_valid) > 0:
+    coords_out = np.radians(df_out[["Latitude", "Longitude"]].to_numpy())
+    detalhes = []
+
+    for i, (coord, altura_out) in enumerate(zip(coords_out, df_out["Altura (metros)"].to_numpy())):
+        # Se coord tem NaN, não consulta a árvore (evita o erro)
+        if np.isnan(coord).any():
+            detalhes.append(df_out.iloc[i]["Detalhe para Aquisição"])  # mantém original
+            continue
+
+        # Consulta vizinhos dentro do raio
+        vizinhos_idx = tree.query_radius([coord], r=DISTANCIA_LIMITE_RAD)[0]
+
+        ids_validos = []
+        for j in vizinhos_idx:
+            intervalos = b_valid.iloc[j]["Intervalos"]
+            if altura_dentro_de_quais_intervalos(altura_out, intervalos):
+                ids_validos.append(str(b_valid.iloc[j]["ID Detentora"]))
+
+        ids_validos = sorted(set(ids_validos))
+        if len(ids_validos) == 1:
+            detalhes.append(f"É possível fazer collo com o {ids_validos[0]}")
+        elif len(ids_validos) > 1:
+            detalhes.append(f"É possível fazer collo com as {', '.join(ids_validos)}")
+        else:
+            detalhes.append(df_out.iloc[i]["Detalhe para Aquisição"])  # sem mudança
+
+    df_out["Detalhe para Aquisição"] = detalhes
+
+# Primeiro, vamos investigar os dados
+print("Tipo dos dados:")
+print(type(df_out.iloc[0]["Latitude"]))
+print(type(df_out.iloc[0]["Longitude"]))
+
+print("\nValores:")
+print(df_out.iloc[0]["Latitude"])
+print(df_out.iloc[0]["Longitude"])
+
+print("\nPrimeiras linhas das colunas:")
+print(df_out[["Latitude", "Longitude"]].head())
+print(df_out[["Latitude", "Longitude"]].dtypes)
+display(df_out)
+
+
+df_out = df_out.drop(columns=["Sigla", "Nome do Site", "Cobertura", "Setor","Altura (Metros)",'UF'])
+df_out = df_out[colunas]
+
+ 
+#codigo para coordenada
+
+#df_out = df_out.merge(b_sharing,
+    #on="ID MASTER",
+    #how="left"
+#)
+
+df_out["ID Master"] = df_out["ID Master"].str.upper()
+# Salva resultado
+df_out.to_excel("Gestão SOI 3_t.xlsx", index=False)
+print("Planilha gerada com sucesso!")
