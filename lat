@@ -122,18 +122,15 @@ if len(b_valid) > 0:
 
 
 
-from sklearn.metrics.pairwise import haversine_distances
-AttributeError                            Traceback (most recent call last)
-AttributeError: 'numpy.float64' object has no attribute 'radians'
+# Primeiro, vamos investigar os dados
+print("Tipo dos dados:")
+print(type(df_out.iloc[0]["Latitude"]))
+print(type(df_out.iloc[0]["Longitude"]))
 
-The above exception was the direct cause of the following exception:
+print("\nValores:")
+print(df_out.iloc[0]["Latitude"])
+print(df_out.iloc[0]["Longitude"])
 
-TypeError                                 Traceback (most recent call last)
-Cell In[22], line 140
-    138 # Primeiro ponto de df_out
-    139 coord_raw = df_out.iloc[0][["Latitude","Longitude"]].to_numpy().reshape(1, -1)  # garante array 2D
---> 140 coord_test = np.radians(coord_raw)  # agora funciona
-    142 # Distâncias para todos os pontos de b_valid
-    143 distancias = haversine_distances(coord_test, coords_b) * RAIO_TERRA_M  # em metros
-
-TypeError: loop of ufunc does not support argument 0 of type numpy.float64 which has no callable radians metho
+print("\nPrimeiras linhas das colunas:")
+print(df_out[["Latitude", "Longitude"]].head())
+print(df_out[["Latitude", "Longitude"]].dtypes)
