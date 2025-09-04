@@ -1,40 +1,76 @@
 import pandas as pd
 import numpy as np
 from sklearn.neighbors import BallTree
- 
-# --------------------------
-# Configurações principais
-# --------------------------
-RAIO_METROS = 250
-RAIO_RADIANOS = RAIO_METROS / 6371000  # Raio da Terra ≈ 6.371 km
-COL_LAT = "latitude"
-COL_LON = "longitude"
-COL_ID = "id_detentora"
- 
-# --------------------------
-# Leitura das planilhas
-# --------------------------
-df1 = pd.read_excel("sites_df1.xlsx")  # Sites principais
-df2 = pd.read_excel("sites_df2.xlsx")  # Sites que terão a coluna preenchida
- 
-# Cria a coluna para armazenar os detalhes
-df2["Detalhe de Aquisição"] = ""
- 
-# --------------------------
-# Conversão para radianos
-# --------------------------
-coords_df1 = np.radians(df1[[COL_LAT, COL_LON]].values)
-coords_df2 = np.radians(df2[[COL_LAT, COL_LON]].values)
- 
-# --------------------------
-# Construção da BallTree
-# --------------------------
-tree = BallTree(coords_df2, metric="haversine")
- 
-# --------------------------
-# Busca do site mais próximo
-# --------------------------
-distancias, indices = tree.query(coords_df1, k=1)
+
+# --- Carregar dados ---
+b_sharing = pd.read_excel("b_sharing.xlsx")
+df_out = pd.read_excel("df_out.xlsx")
+
+# --- Parâmetros ---
+DISTANCIA_KM = 0.25  # 250 metros
+
+# --- Filtrar apenas "Compartilhável = sim" ---
+b_sharing = b_sharing[b_sharing["Compartilhável"].astype(str).str.strip().str.lower() == "sim"]
+
+# --- Remover coordenadas inválidas em b_sharing ---
+b_sharing["Latitude"] = pd.to_numeric(b_sharing["Latitude"], errors="coerce")
+b_sharing["Longitude"] = pd.to_numeric(b_sharing["Longitude"], errors="coerce")
+b_sharing = b_sharing.dropna(subset=["Latitude", "Longitude"])
+
+# --- Criar BallTree ---
+if not b_sharing.empty:
+    coords_b = np.radians(b_sharing[["Latitude", "Longitude"]].astype(float).values)
+    tree = BallTree(coords_b, metric="haversine")
+else:
+    tree = None
+
+# --- Garantir que df_out tem coluna de detalhes ---
+df_out["Detalhe para Aquisição"] = df_out["Detalhe para Aquisição"].fillna("")
+
+# --- Função para encontrar colos possíveis ---
+def encontrar_colos(lat, lon, distancia_km=DISTANCIA_KM):
+    if tree is None:
+        return []
+    if pd.isna(lat) or pd.isna(lon):
+        return []
+
+    coord = np.radians([[lat, lon]])
+    distancia_rad = distancia_km / 6371.0  # km -> radianos
+    indices = tree.query_radius(coord, r=distancia_rad)[0]
+
+    resultados = []
+    for i in indices:
+        linha = b_sharing.iloc[i]
+        resultados.append(f"{linha['Proprietário']} - ID Detentora {linha['ID Detentora']}")
+    return resultados
+
+# --- Processar df_out adicionando info ao final ---
+detalhes_finais = []
+for i, row in df_out.iterrows():
+    lat, lon = row["Latitude"], row["Longitude"]
+    colos = encontrar_colos(lat, lon, distancia_km=DISTANCIA_KM)
+
+    detalhe_original = str(row["Detalhe para Aquisição"]).strip()
+    if colos:
+        if len(colos) == 1:
+            novo_texto = f"É possível fazer colo com {colos[0]}"
+        else:
+            novo_texto = f"É possível fazer colo com as: {', '.join(colos)}"
+
+        if detalhe_original:
+            detalhe_final = detalhe_original + " | " + novo_texto
+        else:
+            detalhe_final = novo_texto
+    else:
+        detalhe_final = detalhe_original
+
+    detalhes_finais.append(detalhe_final)
+
+df_out["Detalhe para Aquisição"] = detalhes_finais
+
+# --- Salvar resultado ---
+df_out.to_excel("df_out_atualizado.xlsx", index=False)
+print("Processamento concluído! Arquivo df_out_atualizado.xlsx gerado.")distancias, indices = tree.query(coords_df1, k=1)
  
 # distancias -> em radianos, convertemos para metros
 distancias_metros = distancias[:, 0] * 6371000  # Raio médio da Terra em metros
