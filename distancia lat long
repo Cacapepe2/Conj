@@ -70,27 +70,4 @@ df_out["Detalhe para Aquisição"] = detalhes_finais
 
 # --- Salvar resultado ---
 df_out.to_excel("df_out_atualizado.xlsx", index=False)
-print("Processamento concluído! Arquivo df_out_atualizado.xlsx gerado.")distancias, indices = tree.query(coords_df1, k=1)
- 
-# distancias -> em radianos, convertemos para metros
-distancias_metros = distancias[:, 0] * 6371000  # Raio médio da Terra em metros
-indices = indices[:, 0]  # Índices dos sites mais próximos no df2
- 
-# --------------------------
-# Preenchimento do df2
-# --------------------------
-for i, dist in enumerate(distancias_metros):
-    if dist <= RAIO_METROS:
-        idx_df2 = indices[i]
-        df2.loc[idx_df2, "Detalhe de Aquisição"] = (
-            f"Este {df2.loc[idx_df2, COL_ID]} está há {int(dist)} metros deste site"
-        )
- 
-# --------------------------
-# Salvar resultado
-# --------------------------
-df2.to_excel("sites_df2_atualizado.xlsx", index=False)
- 
-print("✅ Processamento concluído com BallTree!")
-print(f"Arquivo 'sites_df2_atualizado.xlsx' gerado com sucesso.")
- 
+print("Processamento concluído! Arquivo df_out_atualizado.xlsx gerado.")
